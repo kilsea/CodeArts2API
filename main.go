@@ -61,6 +61,15 @@ func main() {
 	}
 	log.Printf("状态文件: %s", st.Path())
 
+	// 收敛 v0.1.7 及之前按 AK 去重留下的重复账号：同一华为账号（DomainID 相同）
+	// 只保留一条，避免把上游「每账号 3 个会话」的并发额度占满。
+	if groups, removed := st.MergeDuplicates(); removed > 0 {
+		log.Printf("账号去重：合并 %d 组重复账号，删除 %d 条冗余记录", groups, removed)
+		if err := st.Save(); err != nil {
+			log.Printf("保存去重结果失败: %v", err)
+		}
+	}
+
 	if *importOnly {
 		runImport(st, *userData)
 		return

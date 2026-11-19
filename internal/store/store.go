@@ -414,7 +414,15 @@ func (s *Store) Account(id string) *codearts.Account {
 	return nil
 }
 
-// UpsertAccount 按 UserData / AK 去重后写入账号。
+// UpsertAccount 按稳定身份键去重后写入账号。
+//
+// 去重顺序：UserData（桌面端 profile 目录）→ Session.DomainID（华为云账号）。
+// 两者都没有时才退回「同 AccessKey」，这只对同一份尚未轮换的凭据有效。
+//
+// 历史教训：v0.1.7 及之前只按 UserData / AK 去重，而浏览器登录创建的账号
+// UserData 为空、AK 又是每次登录都会轮换的 STS 临时凭据，于是每重登一次
+// 就必然新增一条记录 —— 同一个华为账号在池里堆成 2~3 条，占满上游
+// 「每账号 3 个会话」的并发额度，多份 refresh_token 还会互相作废。
 //
 // 入库时拷贝一份：store 拥有自己的副本，调用方之后对入参的修改不会绕过锁
 // 偷偷改到 store 内部状态。
@@ -424,22 +432,151 @@ func (s *Store) UpsertAccount(a *codearts.Account) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i, ex := range s.st.Accounts {
-		sameDir := ex.UserData != "" && ex.UserData == a.UserData
-		sameAK := ex.Session != nil && a.Session != nil &&
-			ex.Session.AccessKey != "" && ex.Session.AccessKey == a.Session.AccessKey
-		if sameDir || sameAK {
-			a.ID = ex.ID
-			// 备注由用户维护：重新导入同一账号的登录态时，不应把已有备注清空。
-			if a.Note == "" {
-				a.Note = ex.Note
+
+	idx := -1
+	if key := a.IdentityKey(); key != "" {
+		for i, ex := range s.st.Accounts {
+			if ex.IdentityKey() == key {
+				idx = i
+				break
 			}
-			s.st.Accounts[i] = cloneAccount(a)
-			return false
 		}
 	}
-	s.st.Accounts = append(s.st.Accounts, cloneAccount(a))
-	return true
+	if idx < 0 {
+		for i, ex := range s.st.Accounts {
+			if ex.Session != nil && a.Session != nil &&
+				ex.Session.AccessKey != "" && ex.Session.AccessKey == a.Session.AccessKey {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		s.st.Accounts = append(s.st.Accounts, cloneAccount(a))
+		return true
+	}
+
+	merged := mergeAccount(s.st.Accounts[idx], a)
+	s.st.Accounts[idx] = merged
+	// 调用方会用 *a 的 ID 回写控制台响应，这里同步成实际保留的 ID。
+	a.ID = merged.ID
+	return false
+}
+
+// mergeAccount 把「本次写入」合并进「已有记录」。
+//
+// 保留已有记录的 ID（控制台和凭据缓存都按 ID 引用），凭据取更新的那份，
+// 用户维护的字段（备注、签到记录、积分快照）在新值缺失时继承旧值。
+func mergeAccount(old, in *codearts.Account) *codearts.Account {
+	if old == nil {
+		return cloneAccount(in)
+	}
+	out := cloneAccount(in)
+	if out == nil {
+		return cloneAccount(old)
+	}
+	out.ID = old.ID
+	if out.Name == "" {
+		out.Name = old.Name
+	}
+	if out.Note == "" {
+		out.Note = old.Note
+	}
+	if out.Session == nil {
+		out.Session = old.Session
+	} else {
+		out.Session = pickSession(old.Session, out.Session)
+	}
+	if out.LastClaimDate == "" {
+		out.LastClaimDate = old.LastClaimDate
+	}
+	if out.LastClaimAt == 0 {
+		out.LastClaimAt = old.LastClaimAt
+	}
+	if out.LastClaimErr == "" {
+		out.LastClaimErr = old.LastClaimErr
+	}
+	if out.LastClaimMsg == "" {
+		out.LastClaimMsg = old.LastClaimMsg
+	}
+	if out.CreditRefreshedAt == 0 {
+		out.CreditExpiring = old.CreditExpiring
+		out.CreditResetDate = old.CreditResetDate
+		out.CreditRefreshedAt = old.CreditRefreshedAt
+	}
+	return out
+}
+
+// pickSession 在合并两条记录时选凭据：默认采用「本次」的新凭据，
+// 但明显更旧（过期时间更早）的那份不覆盖已有凭据。
+func pickSession(old, in *codearts.Session) *codearts.Session {
+	if in == nil {
+		return old
+	}
+	if old == nil {
+		return in
+	}
+	if old.IsPermanent() || in.IsPermanent() {
+		if in.IsPermanent() && !old.IsPermanent() {
+			return in
+		}
+		if old.IsPermanent() && !in.IsPermanent() {
+			return old
+		}
+		// 两份都是永久 AK/SK：AK 变了视为用户显式换密钥。
+		if in.AccessKey != old.AccessKey {
+			return in
+		}
+		return old
+	}
+	if in.ExpiresAt.After(old.ExpiresAt) {
+		return in
+	}
+	// 过期时间相同但 AK 已轮换（续期后时钟精度可能一致）时也采用新凭据。
+	if in.ExpiresAt.Equal(old.ExpiresAt) && in.AccessKey != old.AccessKey {
+		return in
+	}
+	return old
+}
+
+// MergeDuplicates 合并账号池中 DomainID 相同的历史重复记录。
+//
+// 只为 v0.1.7 及之前按 AK 去重造成的存量数据做一次收敛：同一华为账号
+// 只保留一条，ID 沿用池中最先出现的那条（控制台与缓存引用不变），
+// 凭据取过期时间最晚的一份，备注 / 签到 / 积分快照按字段合并。
+//
+// 没有 DomainID 的记录不会被动（无法安全判断是否同一账号）。
+// 返回合并的组数与删除的记录数。
+func (s *Store) MergeDuplicates() (groups, removed int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	kept := make([]*codearts.Account, 0, len(s.st.Accounts))
+	index := make(map[string]int, len(s.st.Accounts))
+	mergedKeys := make(map[string]bool)
+	for _, a := range s.st.Accounts {
+		key := a.IdentityKey()
+		if !strings.HasPrefix(key, "domain:") {
+			kept = append(kept, a)
+			continue
+		}
+		at, ok := index[key]
+		if !ok {
+			index[key] = len(kept)
+			kept = append(kept, a)
+			continue
+		}
+		if !mergedKeys[key] {
+			mergedKeys[key] = true
+			groups++
+		}
+		kept[at] = mergeAccount(kept[at], a)
+		removed++
+	}
+	if removed > 0 {
+		s.st.Accounts = kept
+	}
+	return groups, removed
 }
 
 // RemoveAccount 删除账号。

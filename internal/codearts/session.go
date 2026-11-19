@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -305,6 +306,31 @@ type Account struct {
 	CreditExpiring    float64 `json:"credit_expiring,omitempty"`
 	CreditResetDate   string  `json:"credit_reset_date,omitempty"`
 	CreditRefreshedAt int64   `json:"credit_refreshed_at,omitempty"`
+}
+
+// IdentityKey 返回账号的稳定身份键，供账号池去重与控制台合并使用。
+//
+// 不能拿 AccessKey 当身份：STS 临时凭据每次登录/续期都会轮换，
+// 用它去重等于「每重登一次就多一条记录」——这正是 v0.1.7 及之前
+// 同一个账号在池里堆成多条的根因。
+//
+// 优先级：
+//  1. UserData —— 桌面端 profile 目录，一个目录只对应一个登录态；
+//  2. Session.DomainID —— 华为云账号 ID，凭据轮换不影响它；
+//  3. 空串 —— 没有稳定身份，调用方应退回 AccessKey 兜底。
+func (a *Account) IdentityKey() string {
+	if a == nil {
+		return ""
+	}
+	if dir := strings.TrimSpace(a.UserData); dir != "" {
+		return "dir:" + filepath.Clean(dir)
+	}
+	if a.Session != nil {
+		if id := strings.TrimSpace(a.Session.DomainID); id != "" {
+			return "domain:" + id
+		}
+	}
+	return ""
 }
 
 // DisplayName 返回账号展示名。
