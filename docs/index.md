@@ -55,7 +55,7 @@
 goal                 goal-and-requirements.md        产品目标、能力、非目标、原则
 └─ architecture      architecture.md                 模块依赖边、不变量、已知限制
    ├─ codearts       internal/codearts/SPEC.md       上游复刻层
-   ├─ protocol       internal/protocol/SPEC.md       Anthropic ↔ OpenAI 纯转换
+   ├─ protocol       internal/protocol/SPEC.md       Anthropic / Responses ↔ OpenAI 纯转换
    ├─ apierr         internal/apierr/SPEC.md         错误 → 状态码/type 唯一映射
    ├─ store          internal/store/SPEC.md          状态持久化与账号池
    ├─ registry       internal/registry/SPEC.md       模型清单与别名
@@ -67,6 +67,7 @@ goal                 goal-and-requirements.md        产品目标、能力、非
    ├─ adr-0004       docs/adr/0004-…                  有意推迟的重构
    ├─ adr-0005       docs/adr/0005-…                  只剩积分通道
    └─ adr-0006       docs/adr/0006-…                  凭据形态显式建模（STS / 永久 AK·SK）
+   └─ adr-0007       docs/adr/0007-…                  Responses API 翻译到 Chat Completions，状态只放内存
 ```
 
 新建的 `goal` / `architecture` / 六个模块 `SPEC.md` 目前是 `status: draft` ——
@@ -87,6 +88,7 @@ goal                 goal-and-requirements.md        产品目标、能力、非
 | [0004](adr/0004-deferred-refactors.md) | 有意推迟的重构及原因（codearts 拆分、SSE、slog…） |
 | [0005](adr/0005-remove-benefit-channel.md) | 删除免费权益（benefit）通道，只保留积分通道 |
 | [0006](adr/0006-credential-kind.md) | 凭据形态显式建模：STS 临时凭据 / IAM 永久 AK·SK（不靠过期时间猜） |
+| [0007](adr/0007-responses-api.md) | Responses API 翻译到 Chat Completions；`store` / `previous_response_id` 只存内存 |
 
 ---
 

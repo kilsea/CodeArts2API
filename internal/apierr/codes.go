@@ -41,6 +41,13 @@ const (
 	CodeInternal = "internal_error"
 	// CodeCreditDisabled 表示控制台关掉了「允许真实消耗积分」开关。
 	CodeCreditDisabled = "credit_models_disabled"
+	// CodePreviousResponseNotFound 表示 Responses API 的 previous_response_id
+	// 指向的响应不存在（从未存在过，或已被淘汰 / 进程重启后丢失）。
+	//
+	// 取值与 OpenAI 一致：客户端（官方 SDK）靠它判断「这条链断了，得重发上下文」。
+	CodePreviousResponseNotFound = "previous_response_not_found"
+	// CodeResponseNotFound 表示按 id 查询 / 删除一个不存在的响应。
+	CodeResponseNotFound = "not_found"
 )
 
 // Coder 由「能说清自己该归到哪个规范错误码」的错误类型实现。
@@ -169,6 +176,38 @@ type InvalidParamError struct {
 
 // Error 实现 error。
 func (e *InvalidParamError) Error() string { return e.Reason }
+
+// ResponseNotFound 表示 Responses API 里的响应 id 查不到。
+//
+// Param 为空表示客户端是**直接按 id 查**（GET /v1/responses/{id}），
+// 非空表示它来自请求体里的某个字段（previous_response_id）。
+// 两种情况对外状态码都是 404，但规范码不同：OpenAI 对前者回 `not_found`，
+// 对后者回 `previous_response_not_found`。
+type ResponseNotFound struct {
+	// ID 是客户端提供的响应 id。
+	ID string
+	// Param 是请求体里的字段路径，空表示按 id 直查。
+	Param string
+}
+
+// Error 实现 error。
+func (e *ResponseNotFound) Error() string {
+	if e.Param != "" {
+		return "previous_response_id 指向的响应 " + e.ID + " 不存在或已过期，请重新发送完整上下文"
+	}
+	return "响应 " + e.ID + " 不存在或已过期"
+}
+
+// APICode 实现 Coder。
+func (e *ResponseNotFound) APICode() string {
+	if e.Param != "" {
+		return CodePreviousResponseNotFound
+	}
+	return CodeResponseNotFound
+}
+
+// APIParam 实现 Coder。
+func (e *ResponseNotFound) APIParam() string { return e.Param }
 
 // APICode 实现 Coder。
 func (e *InvalidParamError) APICode() string {

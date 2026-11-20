@@ -44,6 +44,11 @@ GOLDEN_DIR="$HERE/golden"
 TMPDIR_RUN="$(mktemp -d 2>/dev/null || mktemp -d -t contract)"
 trap 'rm -rf "$TMPDIR_RUN"' EXIT
 
+# Windows 上 python 向管道输出时用系统代码页（GBK），中文内容会被转成非法 UTF-8，
+# 后续 json.load 直接报 UnicodeDecodeError（表现为「第二轮请求体为空」）。
+# 强制 UTF-8 让所有平台行为一致。
+export PYTHONIOENCODING=utf-8
+
 PASS=0
 FAIL=0
 SKIP=0
@@ -231,9 +236,15 @@ PY
     skip "本轮没有 thinking 块（模型未返回推理内容），跳过 signature 断言"
   fi
 
-  TURN2="$(python - "$MODEL" "$CONTENT" <<'PY'
+  # 注意：content 不能当命令行参数传给 python —— Windows 上非 ASCII 参数会被
+  # 转成 ANSI 代码页，json.loads 直接报错（第二轮就会拿到空请求体）。
+  # 改成写临时文件、由 python 读文件。
+  CONTENT_FILE="$TMPDIR_RUN/anthropic-content.json"
+  printf '%s' "$CONTENT" > "$CONTENT_FILE"
+  TURN2="$(python - "$MODEL" "$CONTENT_FILE" <<'PY'
 import json,sys
-model, content = sys.argv[1], json.loads(sys.argv[2])
+model = sys.argv[1]
+content = json.load(open(sys.argv[2], encoding='utf-8'))
 print(json.dumps({"model":model,"max_tokens":32,"messages":[
     {"role":"user","content":"回答 ok 两个字"},
     {"role":"assistant","content":content},
@@ -338,6 +349,49 @@ PY
   else
     skip "没有 golden 快照（用 --record-golden 记录）"
   fi
+fi
+
+# ------------------------------------------------------------
+# #10 Responses API：非流式 / 流式 / 续写 / 显式拒绝
+# ------------------------------------------------------------
+echo "#10 Responses API"
+request POST /v1/responses "{\"model\":\"$MODEL\",\"input\":\"Reply with exactly: ok\",\"max_output_tokens\":32}"
+RESP_ID=""
+if expect_status 200 "非流式 200"; then
+  OBJ="$(json_get "$BODY_FILE" 'd.get("object","")')"
+  ST="$(json_get "$BODY_FILE" 'd.get("status","")')"
+  NOUT="$(json_get "$BODY_FILE" 'len(d.get("output",[]))')"
+  RESP_ID="$(json_get "$BODY_FILE" 'd.get("id","")')"
+  [ "$OBJ" = "response" ] && ok "object=response" || bad "object=$OBJ，期望 response"
+  [ "$ST" = "completed" ] && ok "status=completed" || bad "status=$ST"
+  [ "${NOUT:-0}" -ge 1 ] && ok "output 条目数 $NOUT" || bad "output 为空"
+fi
+
+if [ -n "$RESP_ID" ]; then
+  request POST /v1/responses "{\"model\":\"$MODEL\",\"previous_response_id\":\"$RESP_ID\",\"input\":\"继续，只回 ok\",\"max_output_tokens\":32}"
+  expect_status 200 "previous_response_id 续写 200"
+fi
+
+request POST /v1/responses "{\"model\":\"$MODEL\",\"input\":\"hi\",\"stream\":true,\"max_output_tokens\":16}"
+if expect_status 200 "流式 200"; then
+  if grep -q 'event: response.completed' "$BODY_FILE"; then
+    ok "流式含 response.completed"
+  else
+    bad "流式缺少 response.completed"
+  fi
+  if grep -q '\[DONE\]' "$BODY_FILE"; then
+    bad "Responses 流不应出现 [DONE]"
+  else
+    ok "流式无 [DONE]（符合 Responses 规范）"
+  fi
+fi
+
+request POST /v1/responses "{\"model\":\"$MODEL\",\"input\":\"hi\",\"background\":true}"
+if expect_status 400 "background 被明确拒绝"; then
+  CODE="$(json_get "$BODY_FILE" 'd["error"].get("code","")')"
+  PARAM="$(json_get "$BODY_FILE" 'd["error"].get("param","")')"
+  [ "$CODE" = "unsupported_parameter" ] && ok "error.code=unsupported_parameter" || bad "error.code=$CODE"
+  [ "$PARAM" = "background" ] && ok "error.param=background" || bad "error.param=$PARAM"
 fi
 
 # ============================================================

@@ -49,6 +49,11 @@ type Server struct {
 	// dumps 是可选请求采样器（CODEARTS_DUMP_SAMPLE 控制，默认关闭）。
 	// nil 表示关闭 —— 默认行为仍然是「不记录任何对话正文」。
 	dumps *Dumper
+
+	// respOnce / respStore 是 Responses API 的内存响应存储（store /
+	// previous_response_id）。惰性初始化：测试会直接构造 &Server{}。
+	respOnce  sync.Once
+	respStore *responseStore
 }
 
 // New 构造服务。
@@ -95,6 +100,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/models", s.withAuth(s.withRateLimit(errOpenAI, s.handleModels)))
 	mux.HandleFunc("/v1/chat/completions", s.withAuth(s.withRateLimit(errOpenAI, s.handleChatCompletions)))
 	mux.HandleFunc("/v1/messages", s.withAuth(s.withRateLimit(errAnthropic, s.handleAnthropicMessages)))
+	// OpenAI Responses API（翻译到上游的 Chat Completions）
+	mux.HandleFunc("/v1/responses", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponses)))
+	mux.HandleFunc("/v1/responses/input_tokens", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponsesInputTokens)))
+	mux.HandleFunc("/v1/responses/{id}", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponsesByID)))
+	mux.HandleFunc("/v1/responses/{id}/input_items", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponsesInputItems)))
 
 	// 控制台 API（统一走管理鉴权 + 同源校验）
 	mux.HandleFunc("/admin/api/state", s.withAdminAuth(s.handleAdminState))

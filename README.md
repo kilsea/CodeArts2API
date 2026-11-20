@@ -17,15 +17,15 @@
 - 💳 **积分通道（唯一通道）** —— 免费权益通道已于 2026-10 下线，全部模型按积分计费（`glm-5.3` / `GLM-5.2` / `deepseek-v4.1-flash` …），控制台可一键停用
 - 🔁 **每日自动领取活动福利** —— 定时领取运营活动奖励（如「每日签到领 1000 积分」），IDE 没开 / 跨天 / 多账号都不漏
 - 🔐 **三种凭据来源** —— 桌面端登录态导入 / 本地浏览器登录（OAuth 回调）/ 手工录入
-- 🔌 **双协议** —— `/v1/chat/completions`（OpenAI）+ `/v1/messages`（Anthropic），含思维链与工具调用
+- 🔌 **三套协议** —— `/v1/chat/completions`（OpenAI）+ `/v1/responses`（OpenAI Responses，含 `previous_response_id`）+ `/v1/messages`（Anthropic），均含思维链与工具调用
 - 🖥️ **内嵌 Web 控制台** —— 账号池 / 密钥 / 日志 / 模型清单与积分倍率一目了然
 
 ```text
 ┌──────────────┐   /v1/chat/completions   ┌───────────────┐  SDK-HMAC-SHA256 签名   ┌───────────────────────────────────┐
-│ 客户端        │   /v1/messages           │ CodeArts2API  │  + X-Security-token     │ snap-access.cn-north-4.myhuawei   │
-│ OpenAI SDK   │   /v1/models             │   (本网关)     │ ──────────────────────▶ │ cloud.com/api/v2/chat/completions │
-│ Anthropic SDK│ ───────────────────────▶ │               │ ◀────────────────────── │                                   │
-│ NewAPI / pi  │   SSE 流式 / 非流式        │               │      OpenAI SSE         └───────────────────────────────────┘
+│ 客户端        │   /v1/responses          │ CodeArts2API  │  + X-Security-token     │ snap-access.cn-north-4.myhuawei   │
+│ OpenAI SDK   │   /v1/messages           │   (本网关)     │ ──────────────────────▶ │ cloud.com/api/v2/chat/completions │
+│ Anthropic SDK│   /v1/models             │               │ ◀────────────────────── │                                   │
+│ NewAPI / pi  │ ───────────────────────▶ │               │      OpenAI SSE         └───────────────────────────────────┘
 └──────────────┘                          └───────┬───────┘
                                                   │ 只读解密（过期时可自行续期）
                                                   ▼
@@ -81,6 +81,11 @@ curl http://127.0.0.1:10087/v1/chat/completions \
 curl http://127.0.0.1:10087/v1/messages \
   -H 'Content-Type: application/json' \
   -d '{"model":"glm-5.3-flash","max_tokens":256,"messages":[{"role":"user","content":"你好"}]}'
+
+# OpenAI Responses API（官方 SDK 的 responses.create）
+curl http://127.0.0.1:10087/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"glm-5.3-flash","input":"你好"}'
 ```
 
 任何 OpenAI / Anthropic SDK 把 `base_url` 指到 `http://127.0.0.1:10087/v1` 即可。
@@ -498,6 +503,10 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 | GET | `/v1/models` | 模型清单（OpenAI 格式，附带 `codearts` 扩展字段） |
 | POST | `/v1/chat/completions` | OpenAI 兼容，支持流式 / 工具调用 / `reasoning_content` |
 | POST | `/v1/messages` | Anthropic Messages API 兼容（含 `thinking` / `tool_use` 双向映射） |
+| POST | `/v1/responses` | OpenAI Responses API 兼容（流式事件流 / `tools` / `previous_response_id`） |
+| POST | `/v1/responses/input_tokens` | 输入 token 估算（本地计算，不打上游、不扣积分） |
+| GET/DELETE | `/v1/responses/{id}` | 查询 / 删除已保存的响应（仅内存，TTL 1 小时） |
+| GET | `/v1/responses/{id}/input_items` | 读取该响应的输入条目 |
 | GET | `/metrics` | Prometheus 文本格式运行指标（与管理接口同一套鉴权） |
 | GET/POST/DELETE | `/admin/api/*` | 控制台 API（见下表） |
 
@@ -607,11 +616,12 @@ CodeArts2API/
 │  │  ├─ util.go               # 脱敏（Mask）/ 随机数 / 时间等小工具
 │  │  └─ debug.go              # state.vscdb 键名转储
 │  ├─ registry/          # 模型清单与别名解析
-│  ├─ protocol/          # Anthropic ↔ OpenAI 纯数据转换（可脱离网络单测）
+│  ├─ protocol/          # Anthropic / Responses ↔ OpenAI 纯数据转换（可脱离网络单测）
 │  ├─ ratelimit/         # 按密钥的令牌桶 + 在飞并发闸门（自我保护限流）
 │  ├─ apierr/            # 内部错误 → 对外 HTTP 状态码 / OpenAI·Anthropic type
-│  ├─ server/            # OpenAI / Anthropic 兼容层 + 控制台
-│  │  ├─ chat.go  anthropic.go  models.go  model_resolve.go
+│  ├─ server/            # OpenAI / Anthropic / Responses 兼容层 + 控制台
+│  │  ├─ chat.go  anthropic.go  responses.go  models.go  model_resolve.go
+│  │  ├─ responsestore.go      # Responses 的内存响应存储（store / previous_response_id）
 │  │  ├─ claim.go              # 每日自动领取活动福利调度
 │  │  ├─ creditloop.go         # 积分快照后台刷新（供「到期积分优先」调度）
 │  │  ├─ login.go              # 浏览器登录 API

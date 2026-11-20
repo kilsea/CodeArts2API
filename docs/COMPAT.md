@@ -6,8 +6,9 @@
 > 本文件是**承诺**：下面标 ✅ 的行为都有测试钉住（`internal/server/*_test.go`
 > 与 `scripts/contract_test.sh`）。改行为必须先改这张表。
 >
-> 对齐版本：v0.1.8 基线 + 本次兼容改造（角色规范化 / 模型校验 / 错误归一 /
-> thinking signature / 请求校验 / 能力矩阵 / 并发闸门 / 采样重放 全部落地）。
+> 对齐版本：v0.1.8 基线 + 兼容改造（角色规范化 / 模型校验 / 错误归一 /
+> thinking signature / 请求校验 / 能力矩阵 / 并发闸门 / 采样重放），
+> 以及 **Responses API 翻译层**（`docs/adr/0007-responses-api.md`）。
 
 ---
 
@@ -18,7 +19,7 @@
 | `POST /v1/chat/completions` | ✅ | OpenAI 兼容，流式 / 非流式 / tools |
 | `POST /v1/messages` | ✅ | Anthropic Messages，含 thinking signature |
 | `GET /v1/models` | ✅ | 上游清单 + 自定义别名 |
-| `POST /v1/responses` | ❌ | OpenAI Responses API，**未实现** |
+| `POST /v1/responses` | ✅ | OpenAI Responses API（流式 / 非流式 / tools / `previous_response_id`） |
 | `POST /v1/embeddings` | ❌ | **未实现** |
 | `POST /v1/audio/*` | ❌ | **未实现** |
 | `POST /v1/images/generations` | ❌ | 上游有多模态模型，但网关不做图像生成 |
@@ -128,7 +129,39 @@ Anthropic 侧：`{"type":"error","error":{"type":"…","message":"…","code":"�
 
 ---
 
-## 6. Anthropic 兼容细节
+## 6.1 Responses API 兼容细节
+
+上游只有 Chat Completions，所以 Responses 是**网关侧翻译**：请求变成 `messages`，
+响应变成 `response` 对象与事件流。
+
+| 能力 | 状态 | 说明 |
+| --- | --- | --- |
+| `input` 字符串 / 条目数组 | ✅ | `message` / `function_call` / `function_call_output` / `reasoning` |
+| `instructions` | ✅ | 映射为前置 `system`；续写时**覆盖**历史里的 system 提示 |
+| `max_output_tokens` / `temperature` / `top_p` / `parallel_tool_calls` | ✅ | |
+| `text.format` = `text` / `json_object` | ✅ | |
+| `text.format` = `json_schema` | ❌ | 400 `unsupported_parameter`（上游不支持结构化输出约束） |
+| `tools`（`type=function`，扁平） | ✅ | 翻译为 Chat 的嵌套 `function` 形态 |
+| 其它工具类型（`web_search` / `mcp` / `code_interpreter` …） | ❌ | 400 `unsupported_parameter`，不静默降级 |
+| `tool_choice` = `auto` / `none` / `required` / 指定函数 | ✅ | `allowed_tools` → 400 |
+| `input_image`（`image_url`） | ✅ | `file_id` 形式不支持 |
+| `input_file` | ❌ | 400；请把文件内容当文本传入 |
+| `item_reference` | ❌ | 400；请直接回传条目内容 |
+| `reasoning_content` → `reasoning` 条目 | ✅ | 完整思维链放在 `summary[].summary_text` |
+| 流式事件（`response.created` … `response.completed`） | ✅ | 带递增 `sequence_number`；**不发** `[DONE]` |
+| `store` / `GET /v1/responses/{id}` / `DELETE` / `input_items` | ✅ | 仅**内存**（TTL 1h、上限 256 条） |
+| `previous_response_id` | ✅ | 失效/重启后 404 `previous_response_not_found` |
+| `POST /v1/responses/input_tokens` | ✅ | 本地估算，不打上游、不扣积分 |
+| `background` / `conversation` / `prompt` / `truncation:auto` | ❌ | 400 `unsupported_parameter` |
+| `reasoning.effort` / `reasoning.summary` / `text.verbosity` / `include` / `max_tool_calls` / `service_tier` | ⚠️ | 摘掉 + `X-Gateway-Unsupported` 声明 |
+
+> **为什么 `store` 只放内存**：条目里是完整对话正文，落盘等于把全部对话永久留在磁盘上
+> （项目默认不记录任何对话内容）。代价是进程重启 / 条目淘汰后旧 `previous_response_id`
+> 失效 —— 客户端重发完整上下文即可。
+
+---
+
+## 6.2 Anthropic 兼容细节
 
 | 特性 | 状态 | 说明 |
 | --- | --- | --- |
@@ -202,7 +235,9 @@ CODEARTS_DUMP_DIR=/var/lib/codearts2api/samples
 
 以下能力**没有实现**，请不要假设它们存在：
 
-- `/v1/responses`、`/v1/embeddings`、`/v1/audio/*`、图像生成；
+- `/v1/embeddings`、`/v1/audio/*`、图像生成；
+- Responses API 的 `background`（异步作业）、`conversation`、`prompt` 模板、
+  `truncation:auto`、非 function 工具；
 - per-key 配额与用量账单（只有 QPS / 突发 / 并发三道自我保护闸门）；
 - 内置 TLS 与反向代理方案（请在前面放 nginx / caddy）；
 - 多租户隔离（密钥之间共享账号池）；
@@ -222,6 +257,7 @@ CODEARTS_DUMP_DIR=/var/lib/codearts2api/samples
 4. 发 `{"model":"gpt-4o"}` → **404**（说明没有静默回落）；
 5. 发 `{"temperature":99}` → 400 且 `error.param == "temperature"`；
 6. 看响应头有没有 `X-Request-Id`；
-7. Anthropic 客户端：跑两轮对话，第二轮不要崩。
+7. Anthropic 客户端：跑两轮对话，第二轮不要崩；
+8. Responses 客户端：非流式拿到 `object=response`，流式拿到 `response.completed`（且没有 `[DONE]`）。
 
 上面 7 条就是 `scripts/contract_test.sh` 断言的内容。

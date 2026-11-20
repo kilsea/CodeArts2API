@@ -164,6 +164,13 @@ func From(err error) Error {
 		return coded(Error{Status: status, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}, err)
 	}
 
+	// 响应 id 查不到（Responses API）：404，与「参数写错」区分开 ——
+	// 客户端拿到 404 应该重建上下文，而不是去改参数。
+	var rnf *ResponseNotFound
+	if errors.As(err, &rnf) {
+		return coded(Error{Status: http.StatusNotFound, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}, err)
+	}
+
 	var ue *codearts.UpstreamError
 	if !errors.As(err, &ue) {
 		// 凭据不可用、网络错误等：都归为网关侧问题（502），

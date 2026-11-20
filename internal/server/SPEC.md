@@ -4,7 +4,7 @@ type: module-design
 title: server —— HTTP 兼容层与控制台
 status: draft
 parent: architecture
-references: [adr-0002]
+references: [adr-0002, adr-0007]
 ---
 
 # server
@@ -66,8 +66,19 @@ references: [adr-0002]
   「响应头一定带 id」这条契约。
 - **采样默认关闭，且存的是改写前的原始请求体。** 存改写后的体等于让重放永远成功，
   失去排障价值。见 `dump.go` / `replay.go`。
+- **Responses 的 `store` / `previous_response_id` 只存内存（`responsestore.go`）。**
+  条目里是完整对话正文，落盘等于把全部对话永久留在磁盘上（与「默认不记录任何对话
+  内容」冲突）。TTL 1h / 上限 256 条；失效返回 404 `previous_response_not_found`，
+  客户端重发上下文即可。见 adr-0007。
+- **Responses 翻译出来的 Chat 请求体要再走一遍 `validateChatRequest` + `normalizeRoles`。**
+  否则会出现「Responses 能过、Chat 不能过」的不一致，而且翻译错误只能到上游才暴露。
 
 ## 已知限制
+
+- **Responses 的 `store` 不跨进程、不跨实例。** 重启或换实例后旧 `previous_response_id`
+  一律 404；多实例部署需要粘性路由（或客户端自己携带完整上下文）。
+- **Responses 的 `background` / `conversation` / `prompt` / 非 function 工具未实现。**
+  都返回 400 `unsupported_parameter`，不静默降级。
 
 - **限流只做单密钥维度。** 网关侧的 `ratelimit` 只按密钥做 QPS / 突发 / 在飞并发；
   账号维度的并发由 `store` 的每账号信号量兜住（每账号 3 个，排队 20s），
