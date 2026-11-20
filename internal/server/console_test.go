@@ -279,10 +279,12 @@ func TestConsoleTabContract(t *testing.T) {
 	}
 
 	// 收集 HTML 里的页签按钮与面板。
+	// 设置页的子页签也带 role="tab"（a11y 上完全一致），但它们用 data-pane
+	// 标识、由 TestConsoleSettingsPaneContract 单独校验，这里跳过。
 	buttons := map[string]string{} // data-tab -> 整个标签
 	selected := 0
 	for _, tag := range regexp.MustCompile(`(?s)<button\b[^>]*>`).FindAllString(html, -1) {
-		if !strings.Contains(tag, `role="tab"`) {
+		if !strings.Contains(tag, `role="tab"`) || tagAttr(tag, "data-pane") != "" {
 			continue
 		}
 		key := tagAttr(tag, "data-tab")
@@ -345,6 +347,107 @@ func TestConsoleTabContract(t *testing.T) {
 	}
 	if visible != 1 {
 		t.Errorf("初始可见面板有 %d 个，期望恰好 1 个", visible)
+	}
+}
+
+// TestConsoleSettingsPaneContract 校验设置页子页签这条链路：
+//
+//	PANE_IDS（脚本认可的分类）↔ 按钮 data-pane / id / aria-controls ↔ 面板 id="pane-*"
+//
+// 断点的表现都是整页级、而且只能在浏览器里看出来：data-pane 不在 PANE_IDS 里 →
+// 点了一下没反应；aria-controls 与面板 id 不一致 → 页签高亮了、下面内容不变；
+// 分组写到 pane 外面 → 落在所有面板之外，永远不显示（表单项失踪，却查不到）。
+func TestConsoleSettingsPaneContract(t *testing.T) {
+	html := string(consoleHTML)
+	js := string(consoleJS)
+
+	block := regexp.MustCompile(`var PANE_IDS\s*=\s*\[([^\]]*)\]`).FindStringSubmatch(js)
+	if block == nil {
+		t.Fatal("console.js 里找不到 PANE_IDS 定义")
+	}
+	known := map[string]bool{}
+	var ids []string
+	for _, m := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(block[1], -1) {
+		known[m[1]] = true
+		ids = append(ids, m[1])
+	}
+	if len(ids) < 2 {
+		t.Fatalf("PANE_IDS 只有 %d 项，设置页显然没拆开", len(ids))
+	}
+
+	buttons := map[string]string{} // data-pane -> 整个标签
+	selected := 0
+	for _, tag := range regexp.MustCompile(`(?s)<button\b[^>]*>`).FindAllString(html, -1) {
+		key := tagAttr(tag, "data-pane")
+		if key == "" {
+			continue
+		}
+		if _, dup := buttons[key]; dup {
+			t.Errorf("子页签 %q 有多个按钮", key)
+		}
+		buttons[key] = tag
+		if tagAttr(tag, "aria-selected") == "true" {
+			selected++
+		}
+	}
+	panes := map[string]string{} // id -> 整个标签
+	for _, tag := range regexp.MustCompile(`(?s)<div\b[^>]*>`).FindAllString(html, -1) {
+		if id := tagAttr(tag, "id"); strings.HasPrefix(id, "pane-") {
+			panes[id] = tag
+		}
+	}
+
+	for _, key := range ids {
+		tag, ok := buttons[key]
+		if !ok {
+			t.Errorf("PANE_IDS 声明了 %q，但 index.html 没有 data-pane=%q 的子页签按钮", key, key)
+			continue
+		}
+		panelID := "pane-" + key
+		panel, ok := panes[panelID]
+		if !ok {
+			t.Errorf("PANE_IDS 声明了 %q，但 index.html 没有 id=%q 的面板", key, panelID)
+			continue
+		}
+		if got := tagAttr(tag, "aria-controls"); got != panelID {
+			t.Errorf("子页签 %q 的 aria-controls = %q，期望 %q", key, got, panelID)
+		}
+		if got := tagAttr(panel, "aria-labelledby"); got != tagAttr(tag, "id") {
+			t.Errorf("面板 %q 的 aria-labelledby = %q，期望子页签按钮 id %q", panelID, got, tagAttr(tag, "id"))
+		}
+	}
+	for key := range buttons {
+		if !known[key] {
+			t.Errorf("index.html 有 data-pane=%q，但 PANE_IDS 没登记 —— activatePane 会默默回退到第一项", key)
+		}
+	}
+	if selected != 1 {
+		t.Errorf("初始选中的子页签有 %d 个，期望恰好 1 个", selected)
+	}
+	visible := 0
+	for _, panel := range panes {
+		if strings.Contains(tagAttr(panel, "class"), "on") {
+			visible++
+		}
+	}
+	if visible != 1 {
+		t.Errorf("初始可见的设置面板有 %d 个，期望恰好 1 个", visible)
+	}
+
+	// 每个 settings-group 必须落在某个 pane 里面：落在外面的表单项永远不显示。
+	sec := html[strings.Index(html, `id="tab-settings"`):]
+	sec = sec[:strings.Index(sec, `id="saveSettings"`)]
+	chunks := strings.Split(sec, `<div class="settings-pane`)
+	if len(chunks)-1 != len(ids) {
+		t.Errorf("设置页有 %d 个 settings-pane，但 PANE_IDS 有 %d 项", len(chunks)-1, len(ids))
+	}
+	if strings.Contains(chunks[0], `class="settings-group`) {
+		t.Error("有 settings-group 写在第一个 settings-pane 之前，它不会被任何子页签显示")
+	}
+	for i, chunk := range chunks[1:] {
+		if !strings.Contains(chunk, `class="settings-group`) {
+			t.Errorf("第 %d 个子页签面板里没有任何 settings-group（空页签）", i+1)
+		}
 	}
 }
 

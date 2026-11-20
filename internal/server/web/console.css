@@ -807,6 +807,55 @@ input[type=checkbox]:focus-visible{outline:2px solid var(--accent);outline-offse
 
 /* ===== 设置分组 ========================================================= */
 
+/* 设置页按类型拆成多个子页签：一屏放不下二十来个设置项，
+   全平铺会让「领取时刻」这种关键项被埋进滚动区中间。 */
+.subtabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:4px;
+  margin:0 0 18px;
+  padding-bottom:10px;
+  border-bottom:1px solid var(--line);
+}
+.subtab{
+  position:relative;
+  padding:6px 12px;
+  border:1px solid transparent;
+  border-radius:999px;
+  background:transparent;
+  color:var(--text-2);
+  font:inherit;
+  font-size:12.5px;
+  line-height:1.4;
+  white-space:nowrap;
+  cursor:pointer;
+  transition:background-color .14s ease,color .14s ease,border-color .14s ease;
+}
+.subtab:hover{background:var(--surface-2);color:var(--text)}
+.subtab.on{
+  background:var(--accent-soft);
+  border-color:var(--line-2);
+  color:var(--accent-text);
+  font-weight:600;
+}
+/* 该分类里有未保存的改动：右上角一个小圆点（否则改了别的页签里的项，
+   切回来才想起来没保存）。 */
+.subtab.dirty::after{
+  content:"";
+  position:absolute;
+  top:3px;
+  right:4px;
+  width:5px;
+  height:5px;
+  border-radius:50%;
+  background:var(--warn);
+  /* 切一个小口，让点在浅色胶囊上也能看清 */
+  box-shadow:0 0 0 2px var(--surface);
+}
+
+.settings-pane{display:none}
+.settings-pane.on{display:block}
+
 .settings-group{
   padding-top:18px;
   margin-top:18px;
@@ -1027,6 +1076,15 @@ code{
   }
   nav.tabs button .ico{width:15px;height:15px}
   nav.tabs button.on{box-shadow:inset 0 -2px 0 var(--accent)}
+  /* 窄屏：子页签换成横向滚动条，不换行（换行会把表单推得太靠下） */
+  .subtabs{
+    flex-wrap:nowrap;
+    overflow-x:auto;
+    scrollbar-width:none;
+    margin-bottom:14px;
+  }
+  .subtabs::-webkit-scrollbar{display:none}
+  .subtab{padding:5px 10px;font-size:12px}
   .topbar{
     position:sticky;
     top:0;

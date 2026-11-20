@@ -405,55 +405,67 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Store.Stats())
 }
 
+// settingsPatch 是 POST /admin/api/settings 的请求体。
+//
+// 一律用指针：nil = 「这次不改这个字段」，只有显式带上才落盘。
+//
+// 独立成具名类型是为了让 settings_test.go 能用反射校验「store.Settings 里的
+// 每个字段这里都有对应入口」—— 漏一个字段的表现是「界面上改了、保存成功、
+// 但刷新后又变回去了」，靠人读代码是查不出来的（auto_claim 与领取时刻就这么漏过）。
+type settingsPatch struct {
+	ModelAliases      map[string]string `json:"model_aliases"`
+	DefaultModel      *string           `json:"default_model"`
+	ForceModel        *string           `json:"force_model"`
+	RequestTimeout    *int              `json:"request_timeout_sec"`
+	MaxRetries        *int              `json:"max_retries"`
+	LogKeep           *int              `json:"log_keep"`
+	CORSOrigin        *string           `json:"cors_origin"`
+	AdminPassword     *string           `json:"admin_password"`
+	ClearPassword     *bool             `json:"clear_admin_password"`
+	AutoRefresh       *bool             `json:"auto_refresh"`
+	AllowCreditModels *bool             `json:"allow_credit_models"`
+	ModelFallback     *bool             `json:"model_fallback"`
+	AllowAnonymous    *bool             `json:"allow_anonymous"`
+	CreditPriority    *bool             `json:"credit_priority"`
+	RateLimitEnabled  *bool             `json:"rate_limit_enabled"`
+	RateLimitQPS      *int              `json:"rate_limit_qps"`
+	RateLimitBurst    *int              `json:"rate_limit_burst"`
+	RateLimitConc     *int              `json:"rate_limit_concurrency"`
+	AutoClaim         *bool             `json:"auto_claim"`
+	ClaimAfterHour    *int              `json:"claim_after_hour"`
+	ClaimAfterMinute  *int              `json:"claim_after_minute"`
+	WriteBackToIDE    *bool             `json:"write_back_to_ide"`
+	LiveTTLSeconds    *int              `json:"live_ttl_sec"`
+	UserDataDir       *string           `json:"user_data_dir"`
+	LoginPort         *int              `json:"login_port"`
+	PluginName        *string           `json:"plugin_name"`
+	PluginVersion     *string           `json:"plugin_version"`
+	IDEName           *string           `json:"ide_name"`
+	IDEVersion        *string           `json:"ide_version"`
+	Language          *string           `json:"language"`
+	DebugCapture      *bool             `json:"debug_capture"`
+	DebugCaptureRate  *int              `json:"debug_capture_sample"`
+
+	// 联网搜索
+	WebSearchEnabled   *bool   `json:"websearch_enabled"`
+	WebSearchProvider  *string `json:"websearch_provider"`
+	WebSearchEndpoint  *string `json:"websearch_endpoint"`
+	WebSearchAPIKey    *string `json:"websearch_api_key"`
+	WebSearchClearKey  *bool   `json:"clear_websearch_api_key"`
+	WebSearchMaxResult *int    `json:"websearch_max_results"`
+	WebSearchTimeout   *int    `json:"websearch_timeout_sec"`
+	WebSearchFetch     *bool   `json:"websearch_fetch_pages"`
+	WebSearchPageChars *int    `json:"websearch_max_page_chars"`
+	WebSearchCacheTTL  *int    `json:"websearch_cache_ttl_sec"`
+}
+
 // handleAdminSettings 读取或更新设置。
 func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusOK, sanitizedSettings(s.Store.Settings()))
 		return
 	}
-	var body struct {
-		ModelAliases      map[string]string `json:"model_aliases"`
-		DefaultModel      *string           `json:"default_model"`
-		ForceModel        *string           `json:"force_model"`
-		RequestTimeout    *int              `json:"request_timeout_sec"`
-		MaxRetries        *int              `json:"max_retries"`
-		LogKeep           *int              `json:"log_keep"`
-		CORSOrigin        *string           `json:"cors_origin"`
-		AdminPassword     *string           `json:"admin_password"`
-		ClearPassword     *bool             `json:"clear_admin_password"`
-		AutoRefresh       *bool             `json:"auto_refresh"`
-		AllowCreditModels *bool             `json:"allow_credit_models"`
-		ModelFallback     *bool             `json:"model_fallback"`
-		AllowAnonymous    *bool             `json:"allow_anonymous"`
-		CreditPriority    *bool             `json:"credit_priority"`
-		RateLimitEnabled  *bool             `json:"rate_limit_enabled"`
-		RateLimitQPS      *int              `json:"rate_limit_qps"`
-		RateLimitBurst    *int              `json:"rate_limit_burst"`
-		RateLimitConc     *int              `json:"rate_limit_concurrency"`
-		WriteBackToIDE    *bool             `json:"write_back_to_ide"`
-		LiveTTLSeconds    *int              `json:"live_ttl_sec"`
-		UserDataDir       *string           `json:"user_data_dir"`
-		LoginPort         *int              `json:"login_port"`
-		PluginName        *string           `json:"plugin_name"`
-		PluginVersion     *string           `json:"plugin_version"`
-		IDEName           *string           `json:"ide_name"`
-		IDEVersion        *string           `json:"ide_version"`
-		Language          *string           `json:"language"`
-		DebugCapture      *bool             `json:"debug_capture"`
-		DebugCaptureRate  *int              `json:"debug_capture_sample"`
-
-		// 联网搜索
-		WebSearchEnabled   *bool   `json:"websearch_enabled"`
-		WebSearchProvider  *string `json:"websearch_provider"`
-		WebSearchEndpoint  *string `json:"websearch_endpoint"`
-		WebSearchAPIKey    *string `json:"websearch_api_key"`
-		WebSearchClearKey  *bool   `json:"clear_websearch_api_key"`
-		WebSearchMaxResult *int    `json:"websearch_max_results"`
-		WebSearchTimeout   *int    `json:"websearch_timeout_sec"`
-		WebSearchFetch     *bool   `json:"websearch_fetch_pages"`
-		WebSearchPageChars *int    `json:"websearch_max_page_chars"`
-		WebSearchCacheTTL  *int    `json:"websearch_cache_ttl_sec"`
-	}
+	var body settingsPatch
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return
@@ -470,6 +482,16 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 				"websearch_provider 只支持 searxng / tavily / brave", "invalid_value")
 			return
 		}
+	}
+	// 领取时刻先校验：越界值如果静默夹回默认值，用户会以为「我设了 25 点」
+	// 生效了，其实每天还是在 00:05 领。
+	if body.ClaimAfterHour != nil && (*body.ClaimAfterHour < 0 || *body.ClaimAfterHour > 23) {
+		writeErr(w, http.StatusBadRequest, "claim_after_hour 取值范围 0-23", "invalid_value")
+		return
+	}
+	if body.ClaimAfterMinute != nil && (*body.ClaimAfterMinute < 0 || *body.ClaimAfterMinute > 59) {
+		writeErr(w, http.StatusBadRequest, "claim_after_minute 取值范围 0-59", "invalid_value")
+		return
 	}
 	if body.WebSearchEndpoint != nil {
 		e := strings.TrimSpace(*body.WebSearchEndpoint)
@@ -515,6 +537,9 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		setIf(&st.RateLimitQPS, body.RateLimitQPS)
 		setIf(&st.RateLimitBurst, body.RateLimitBurst)
 		setIf(&st.RateLimitConcurrency, body.RateLimitConc)
+		setIf(&st.AutoClaim, body.AutoClaim)
+		setIf(&st.ClaimAfterHour, body.ClaimAfterHour)
+		setIf(&st.ClaimAfterMinute, body.ClaimAfterMinute)
 		setIf(&st.WriteBackToIDE, body.WriteBackToIDE)
 		setIf(&st.LiveTTLSeconds, body.LiveTTLSeconds)
 		setIf(&st.UserDataDir, body.UserDataDir)

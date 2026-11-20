@@ -897,14 +897,30 @@
     setChecked($("#sSearchFetch"), !!s.websearch_fetch_pages);
   }
 
-  function markSettingsDirty(){
+  function markSettingsDirty(ev){
+    // 顺手记下是哪个子页签里的东西变了：子页签会把大部分设置藏起来，
+    // 不标一下就是「改了 A 分类、切到 B 分类、回来才发现没保存」。
+    if (ev && ev.target && ev.target.closest) {
+      var pane = ev.target.closest(".settings-pane");
+      if (pane) markPaneDirty(pane.id.replace("pane-", ""));
+    }
     if (settingsDirty) return;
     settingsDirty = true;
     $("#settingsDirty").classList.remove("hidden");
   }
+  function markPaneDirty(name){
+    var b = document.querySelector('.subtab[data-pane="' + name + '"]');
+    if (!b || b.classList.contains("dirty")) return;
+    b.classList.add("dirty");
+    b.title = "这个分类里有未保存的改动";
+  }
   function clearSettingsDirty(){
     settingsDirty = false;
     $("#settingsDirty").classList.add("hidden");
+    document.querySelectorAll(".subtab.dirty").forEach(function(b){
+      b.classList.remove("dirty");
+      b.removeAttribute("title");
+    });
   }
 
   function refresh(opts){
@@ -1506,6 +1522,45 @@
     activateTab(location.hash.slice(1), false);
   });
 
+  // --- 设置页子页签 ---
+  //
+  // 设置项二十来个，全平铺时「活动福利领取时刻」得滚两屏才看得到。按类型拆成
+  // 5 个子页签，与主页面签共用一套交互（class on / aria-selected / 方向键切换）。
+  // 子页签**不写 URL hash** —— 主页面签已经占了 #settings，写进去会让
+  // 「刷新后回到设置页」变成「回到设置页的某个分类」。选择记在 localStorage。
+  var PANE_IDS = ["models", "service", "limits", "auto", "search"];
+  var PANE_KEY = "codearts2api_settings_pane";
+  function activatePane(name, focus){
+    if (PANE_IDS.indexOf(name) < 0) name = PANE_IDS[0];
+    document.querySelectorAll(".subtab").forEach(function(b){
+      var sel = b.dataset.pane === name;
+      b.classList.toggle("on", sel);
+      b.setAttribute("aria-selected", sel ? "true" : "false");
+      b.tabIndex = sel ? 0 : -1;
+      if (sel && focus) b.focus();
+    });
+    document.querySelectorAll(".settings-pane").forEach(function(p){
+      p.classList.toggle("on", p.id === "pane-" + name);
+    });
+    try { localStorage.setItem(PANE_KEY, name); } catch(e){}
+  }
+  document.querySelectorAll(".subtab").forEach(function(b){
+    b.onclick = function(){ activatePane(b.dataset.pane); };
+    b.addEventListener("keydown", function(e){
+      var i = PANE_IDS.indexOf(b.dataset.pane);
+      if (e.key === "ArrowRight") { i = (i + 1) % PANE_IDS.length; }
+      else if (e.key === "ArrowLeft") { i = (i - 1 + PANE_IDS.length) % PANE_IDS.length; }
+      else return;
+      e.preventDefault();
+      activatePane(PANE_IDS[i], true);
+    });
+  });
+  (function initSettingsPane(){
+    var saved = null;
+    try { saved = localStorage.getItem(PANE_KEY); } catch(e){}
+    activatePane(saved || PANE_IDS[0]);
+  })();
+
   on("#savePw", function(){
     storePw(pw());
     updatePwToggle();
@@ -1847,8 +1902,8 @@
       rate_limit_burst: parseInt($("#sRateBurst").value, 10) || 0,
       rate_limit_concurrency: parseInt($("#sRateConc").value, 10) || 0,
       auto_claim: $("#sAutoClaim").checked,
-      claim_after_hour: parseInt($("#sClaimHour").value, 10) || 0,
-      claim_after_minute: parseInt($("#sClaimMinute").value, 10) || 0,
+      claim_after_hour: numOrNull("#sClaimHour"),
+      claim_after_minute: numOrNull("#sClaimMinute"),
       auto_refresh: $("#sAutoRefresh").checked,
       write_back_to_ide: $("#sWriteBack").checked,
       plugin_name: $("#sPluginName").value.trim(),

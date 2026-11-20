@@ -2,8 +2,9 @@
 
 > 源码仓库：<https://github.com/kilsea/CodeArts2API>
 >
-> 发布产物（二进制 / 容器镜像）由 GitHub Actions 在该仓库的 `v*` tag 上自动构建：
-> `ghcr.io/kilsea/codearts2api`。
+> 发布产物（二进制 / 容器镜像）由 GitHub Actions 构建：CI 在 `main` 上跑绿后自动打
+> `v<日期>-<哈希>` tag 并发 Release；容器镜像推在 `ghcr.io/kilsea/codearts2api`
+> （`linux/amd64` + `linux/arm64`）。
 >
 > 本项目源自 [tomcat927/CodeArts2API](https://github.com/tomcat927/CodeArts2API)，
 > 上游仍作为 `upstream` 远端保留，便于同步其改动。
@@ -798,6 +799,19 @@ go test -race ./...
 > （跨行字符串）、`TestConsoleScriptBalanced`（括号配对）、
 > `TestConsoleHTMLHasNoInlineCode`（无内联 style/script）与
 > `TestConsoleDOMContract`（脚本引用的元素 id 必须存在于 HTML）。
+
+### 7.1 发版与自动打包
+
+| 触发 | 会做什么 |
+| --- | --- |
+| `main` 上的 CI 跑绿 | **自动**打 tag `v<日期>-<7位哈希>`、发 GitHub Release（5 个平台二进制 + `SHA256SUMS.txt`）—— 发版就是 CI 的最后一个 job，同一个 run 内完成；镜像另由 Docker 流水线构建 `:latest` / `:main` / `:sha-xxxxxxx` |
+| `git push` 一个 `v*` tag | 同上，tag 名就是版本号 |
+| Actions → Release → Run workflow | 手动发版，填 tag 名（不存在会创建） |
+
+- 不想为某个提交发版：commit message 里写 `[skip release]`（改文档、纯重构时用）；
+- 同一次提交只会发一次（tag 已存在就跳过），重复触发不会产生空 Release；
+- 自动发版用 `GITHUB_TOKEN` 创建 tag，**不会**再触发 Docker 流水线，所以自动发版的
+  tag 没有单独的 `:v<tag>` 镜像 —— 部署用 `:latest` 或 `:sha-<7位>` 即可。
 
 ---
 

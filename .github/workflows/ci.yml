@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# PR 上取消旧的是省资源；main 上不能取消 —— 发版跑在同一个 workflow 里，
+# 取消一次就意味着这次提交没有 Release。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: test (linux)
@@ -68,3 +74,16 @@ jobs:
         run: go build ./...
       - name: test
         run: go test ./...
+
+  # main 上全绿后自动发版。直接在本 workflow 里调用 reusable workflow，
+  # 不走 workflow_run —— 后者会在 workflow 文件刚上线时对历史 CI 事件补触发，
+  # 实测把同一个提交发了两遍（第二个在 github release 步骤撞车失败）。
+  publish:
+    name: publish release
+    needs: [test, build-windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      auto: true

@@ -543,282 +543,301 @@
             <span id="settingsDirty" class="badge warn hidden">有未保存的改动</span>
           </div>
 
-          <div class="settings-group first">
-            <h3>模型与请求</h3>
-            <div class="field-grid">
-              <div class="field">
-                <label for="sDefaultModel">默认模型</label>
-                <input id="sDefaultModel" placeholder="客户端未指定时使用">
+          <div class="subtabs" role="tablist" aria-label="设置分类">
+            <button role="tab" id="subnav-models" data-pane="models" class="subtab on" aria-selected="true" aria-controls="pane-models">模型与上游</button>
+            <button role="tab" id="subnav-service" data-pane="service" class="subtab" aria-selected="false" aria-controls="pane-service">服务与访问</button>
+            <button role="tab" id="subnav-limits" data-pane="limits" class="subtab" aria-selected="false" aria-controls="pane-limits">限流与调试</button>
+            <button role="tab" id="subnav-auto" data-pane="auto" class="subtab" aria-selected="false" aria-controls="pane-auto">自动化</button>
+            <button role="tab" id="subnav-search" data-pane="search" class="subtab" aria-selected="false" aria-controls="pane-search">联网搜索</button>
+          </div>
+
+          <div class="settings-pane on" id="pane-models" role="tabpanel" aria-labelledby="subnav-models">
+            <div class="settings-group first">
+              <h3>模型与请求</h3>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="sDefaultModel">默认模型</label>
+                  <input id="sDefaultModel" placeholder="客户端未指定时使用">
+                </div>
+                <div class="field">
+                  <label for="sForceModel">强制模型</label>
+                  <input id="sForceModel" placeholder="留空=按客户端请求">
+                  <span class="field-hint">填了则一律覆盖客户端请求。</span>
+                </div>
+                <div class="field">
+                  <label for="sTimeout">请求超时（秒）</label>
+                  <input id="sTimeout" type="number" min="1">
+                </div>
+                <div class="field">
+                  <label for="sRetries">最大重试次数</label>
+                  <input id="sRetries" type="number" min="1">
+                </div>
               </div>
-              <div class="field">
-                <label for="sForceModel">强制模型</label>
-                <input id="sForceModel" placeholder="留空=按客户端请求">
-                <span class="field-hint">填了则一律覆盖客户端请求。</span>
-              </div>
-              <div class="field">
-                <label for="sTimeout">请求超时（秒）</label>
-                <input id="sTimeout" type="number" min="1">
-              </div>
-              <div class="field">
-                <label for="sRetries">最大重试次数</label>
-                <input id="sRetries" type="number" min="1">
+            </div>
+
+            <div class="settings-group">
+              <h3>模型别名</h3>
+              <p class="group-hint">JSON 对象，例如 <code>{"gpt-4o":"glm-5.3-flash"}</code>。</p>
+              <textarea id="sAliases" spellcheck="false" aria-label="模型别名 JSON"></textarea>
+            </div>
+
+            <div class="settings-group">
+              <h3>计费开关</h3>
+              <label class="check" for="sAllowCredit">
+                <input type="checkbox" id="sAllowCredit">
+                <span>允许真实消耗积分
+                  <span class="check-hint">免费权益通道已下线，所有模型都会计费。关闭它等于拒绝一切 <code>/v1/*</code> 模型调用（403），只在临时停服/排障时使用。</span>
+                </span>
+              </label>
+              <label class="check" for="sModelFallback">
+                <input type="checkbox" id="sModelFallback">
+                <span>启用兼容别名（gpt-4o → GLM 等）
+                  <span class="check-hint">默认关闭：请求 <code>gpt-4o</code> 等非真实模型名一律返回 <code>404 model_not_found</code>，绝不静默换模型。打开后这些名字会被映射到真实模型，<strong>每次命中都会回写响应头</strong> <code>X-Gateway-Model-Fallback</code> 并记一条告警日志 —— 客户端以为自己换了模型、其实只是换了个名字。要长期使用，请改配「模型别名」。</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="settings-group">
+              <h3>上游身份头</h3>
+              <p class="group-hint">留空使用与 CodeArts Agent 26.9.902 对齐的缺省值。</p>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="sPluginName">plugin-name</label>
+                  <input id="sPluginName">
+                </div>
+                <div class="field">
+                  <label for="sPluginVersion">plugin-version</label>
+                  <input id="sPluginVersion">
+                </div>
+                <div class="field">
+                  <label for="sIDEName">ide-name</label>
+                  <input id="sIDEName">
+                </div>
+                <div class="field">
+                  <label for="sIDEVersion">ide-version</label>
+                  <input id="sIDEVersion">
+                </div>
               </div>
             </div>
           </div>
 
-          <div class="settings-group">
-            <h3>存储与刷新</h3>
-            <div class="field-grid">
-              <div class="field">
-                <label for="sLogKeep">日志保留条数</label>
-                <input id="sLogKeep" type="number" min="1">
+          <div class="settings-pane" id="pane-service" role="tabpanel" aria-labelledby="subnav-service">
+            <div class="settings-group first">
+              <h3>存储与刷新</h3>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="sLogKeep">日志保留条数</label>
+                  <input id="sLogKeep" type="number" min="1">
+                </div>
+                <div class="field">
+                  <label for="sLiveTTL">IDE 会话重读间隔（秒）</label>
+                  <input id="sLiveTTL" type="number" min="1">
+                </div>
+                <div class="field">
+                  <label for="sUserData">CodeArts Agent User Data 目录</label>
+                  <input id="sUserData" placeholder="%APPDATA%\codearts-agent">
+                  <span class="field-hint">留空自动探测。</span>
+                </div>
+                <div class="field">
+                  <label for="sLoginPort">浏览器登录回调端口</label>
+                  <input id="sLoginPort" type="number" min="0" max="65535" placeholder="0">
+                  <span class="field-hint">0=随机；远端部署建议固定，如 64361。</span>
+                </div>
               </div>
-              <div class="field">
-                <label for="sLiveTTL">IDE 会话重读间隔（秒）</label>
-                <input id="sLiveTTL" type="number" min="1">
+            </div>
+
+            <div class="settings-group">
+              <h3>网络</h3>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="sCors">CORS 允许来源</label>
+                  <input id="sCors" placeholder="http://192.168.1.10:8080">
+                  <span class="field-hint">逗号分隔；留空=仅同源。</span>
+                </div>
               </div>
-              <div class="field">
-                <label for="sUserData">CodeArts Agent User Data 目录</label>
-                <input id="sUserData" placeholder="%APPDATA%\codearts-agent">
-                <span class="field-hint">留空自动探测。</span>
+            </div>
+
+            <div class="settings-group">
+              <h3>访问控制</h3>
+              <label class="check" for="sAllowAnonymous">
+                <input type="checkbox" id="sAllowAnonymous">
+                <span>未签发密钥时允许匿名调用 <code>/v1/*</code>
+                  <span class="check-hint">默认只允许本机直连。若网关监听 0.0.0.0（Docker 默认）或被反向代理，勾选它等于把账号额度开放给任何能访问该端口的人 —— 更好的做法是在「密钥」页签发一个 API 密钥。</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="settings-group">
+              <h3>管理密码</h3>
+              <p class="group-hint">留空=不修改；设置后管理接口必须携带。</p>
+              <div class="row">
+                <input class="w-280" id="sPw" type="password" placeholder="不修改请留空" autocomplete="new-password"
+                       aria-label="新的管理密码">
+                <button class="btn danger" id="clearPw">清除管理密码</button>
               </div>
-              <div class="field">
-                <label for="sLoginPort">浏览器登录回调端口</label>
-                <input id="sLoginPort" type="number" min="0" max="65535" placeholder="0">
-                <span class="field-hint">0=随机；远端部署建议固定，如 64361。</span>
+              <p class="hint">
+                清除后管理接口退回「仅本机直连」兜底；若网关监听 <code>0.0.0.0</code> 或被反向代理，
+                控制台将无法访问。
+              </p>
+            </div>
+          </div>
+
+          <div class="settings-pane" id="pane-limits" role="tabpanel" aria-labelledby="subnav-limits">
+            <div class="settings-group first">
+              <h3>限流</h3>
+              <label class="check" for="sRateLimit">
+                <input type="checkbox" id="sRateLimit">
+                <span>启用按密钥限流
+                  <span class="check-hint">只做自我保护：防止失控客户端（循环重试、Agent 死循环）烧光账号积分，<strong>不</strong>承诺密钥之间的公平配额。超限返回 <code>429</code> + <code>Retry-After</code>，被拦下的请求不消耗额度。</span>
+                </span>
+              </label>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="sRateQPS">每密钥 QPS</label>
+                  <input id="sRateQPS" type="number" min="1">
+                  <span class="field-hint">长期允许的请求速率。</span>
+                </div>
+                <div class="field">
+                  <label for="sRateBurst">突发上限</label>
+                  <input id="sRateBurst" type="number" min="1">
+                  <span class="field-hint">瞬时允许的请求数。</span>
+                </div>
+                <div class="field">
+                  <label for="sRateConc">并发上限</label>
+                  <input id="sRateConc" type="number" min="0">
+                  <span class="field-hint">同一密钥的在飞请求数；0 = 不限。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-group">
+              <h3>调试</h3>
+              <label class="check" for="sDebugCapture">
+                <input type="checkbox" id="sDebugCapture">
+                <span>开启调试采样（本地留存请求正文）
+                  <span class="check-hint">默认关闭。开启后把<strong>脱敏后</strong>的请求体写到状态文件旁的 <code>samples/</code>，<strong>保留 3 天自动删除</strong>；日志页可展开查看、也可按请求 ID 重放。脱敏只处理超长内容（图片 base64、附件正文），对话文字仍会落盘 —— 只在排障时打开。</span>
+                </span>
+              </label>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="sDebugRate">采样率</label>
+                  <select id="sDebugRate" class="w-auto">
+                    <option value="1">全部记录（排障推荐）</option>
+                    <option value="10">1/10</option>
+                    <option value="100">1/100</option>
+                  </select>
+                  <span class="field-hint">改完立即生效，不用点保存；与「日志 → 调试采样」是同一个开关。</span>
+                </div>
               </div>
             </div>
           </div>
 
-          <div class="settings-group">
-            <h3>联网搜索（Web Search）</h3>
-            <label class="check" for="sSearchEnabled">
-              <input type="checkbox" id="sSearchEnabled">
-              <span>启用联网搜索</span>
-            </label>
-            <div class="field-grid">
-              <div class="field">
-                <label for="sSearchProvider">检索后端</label>
-                <select id="sSearchProvider">
-                  <option value="searxng">SearXNG（自托管，无需 Key）</option>
-                  <option value="tavily">Tavily API</option>
-                  <option value="brave">Brave Search API</option>
-                </select>
-                <span class="field-hint" id="sSearchProviderHint">docker 起一个即可。</span>
+          <div class="settings-pane" id="pane-auto" role="tabpanel" aria-labelledby="subnav-auto">
+            <div class="settings-group first">
+              <h3>活动福利自动领取</h3>
+              <label class="check" for="sAutoClaim">
+                <input type="checkbox" id="sAutoClaim">
+                <span>每天自动领取运营活动奖励</span>
+              </label>
+              <div class="row mt-12">
+                <span class="field-label">每日领取时刻</span>
+                <input class="w-hour" id="sClaimHour" type="number" min="0" max="23" inputmode="numeric" aria-label="领取小时">
+                <span class="sep muted">:</span>
+                <input class="w-hour" id="sClaimMinute" type="number" min="0" max="59" inputmode="numeric" aria-label="领取分钟">
+                <span class="field-hint">本地时间，默认 00:05</span>
               </div>
-              <div class="field">
-                <label for="sSearchEndpoint">端点</label>
-                <input id="sSearchEndpoint" placeholder="http://searxng:8080">
-                <span class="field-hint" id="sSearchEndpointHint">实例地址，如 http://searxng:8080。</span>
-              </div>
-              <div class="field">
-                <label for="sSearchKey">API Key</label>
-                <input id="sSearchKey" type="password" autocomplete="new-password" placeholder="user:pass（可选）">
-                <span class="field-hint" id="sSearchKeyHint">已设置时留空表示不修改。</span>
-              </div>
-              <div class="field">
-                <label for="sSearchResults">返回条数</label>
-                <input id="sSearchResults" type="number" min="1" max="10">
-              </div>
-              <div class="field">
-                <label for="sSearchTimeout">检索超时（秒）</label>
-                <input id="sSearchTimeout" type="number" min="1">
-              </div>
-              <div class="field">
-                <label for="sSearchCache">结果缓存（秒）</label>
-                <input id="sSearchCache" type="number" min="0">
-                <span class="field-hint">同一 query 的缓存时长；0 = 不缓存。</span>
-              </div>
-              <div class="field">
-                <label for="sSearchPageChars">单页正文上限（字符）</label>
-                <input id="sSearchPageChars" type="number" min="0">
-              </div>
+              <p class="hint">
+                运营活动的权益按自然日刷新，所以默认 00:05 领。后台每 5 分钟检查一次，
+                到点后的第一个检查周期开始领（不精确到秒），领取接口是幂等的，重复领不会报错。<br>
+                只领服务端说能领的：邀请与学生认证类必须由真实事件触发。
+              </p>
             </div>
-            <label class="check mt-12" for="sSearchFetch">
-              <input type="checkbox" id="sSearchFetch">
-              <span>抓取网页正文
-                <span class="check-hint">对前 3 条结果并发抓正文（带 SSRF 防护：只允许 80/443、拒绝内网 IP）。关闭时只用搜索摘要，更快但信息更少。</span>
-              </span>
-            </label>
-            <div class="row mt-12">
-              <span class="field-label">联通性测试</span>
-              <input class="w-280" id="sSearchQuery" placeholder="测试关键词，如：杭州天气">
-              <button class="btn xs" id="testSearch">测试</button>
+
+            <div class="settings-group">
+              <h3>账号调度</h3>
+              <label class="check" for="sCreditPriority">
+                <input type="checkbox" id="sCreditPriority">
+                <span>到期积分优先调度
+                  <span class="check-hint">积分快照显示有「即将到期」额度的健康账号会被优先调度，尽量在作废前把额度用掉；池内按到期额度降序轮询，在飞打满单账号并发上限（3）时溢出到其他账号。快照由后台每 10 分钟刷新，账号页的「到期优先」标识即数据来源。</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="settings-group">
+              <h3>凭据续期</h3>
+              <label class="check" for="sAutoRefresh">
+                <input type="checkbox" id="sAutoRefresh">
+                <span>过期时自行用 refresh_token 续期</span>
+              </label>
+              <label class="check mt-12" for="sWriteBack">
+                <input type="checkbox" id="sWriteBack">
+                <span>续期后回写 state.vscdb（让 IDE 复用）</span>
+              </label>
+              <p class="hint">
+                IDE 运行时它会自己续期，网关会跟随读取；只有 IDE 关闭且凭据过期时才会用到这里的续期能力。<br>
+                回写仅在长度完全一致时做原地字节覆写，并在写入前备份 <code>state.vscdb.codearts2api.bak</code>。
+              </p>
             </div>
           </div>
 
-          <div class="settings-group">
-            <h3>调试</h3>
-            <label class="check" for="sDebugCapture">
-              <input type="checkbox" id="sDebugCapture">
-              <span>开启调试采样（本地留存请求正文）
-                <span class="check-hint">默认关闭。开启后把<strong>脱敏后</strong>的请求体写到状态文件旁的 <code>samples/</code>，<strong>保留 3 天自动删除</strong>；日志页可展开查看、也可按请求 ID 重放。脱敏只处理超长内容（图片 base64、附件正文），对话文字仍会落盘 —— 只在排障时打开。</span>
-              </span>
-            </label>
-            <div class="field-grid">
-              <div class="field">
-                <label for="sDebugRate">采样率</label>
-                <select id="sDebugRate" class="w-auto">
-                  <option value="1">全部记录（排障推荐）</option>
-                  <option value="10">1/10</option>
-                  <option value="100">1/100</option>
-                </select>
-                <span class="field-hint">改完立即生效，不用点保存；与「日志 → 调试采样」是同一个开关。</span>
+          <div class="settings-pane" id="pane-search" role="tabpanel" aria-labelledby="subnav-search">
+            <div class="settings-group first">
+              <h3>联网搜索（Web Search）</h3>
+              <label class="check" for="sSearchEnabled">
+                <input type="checkbox" id="sSearchEnabled">
+                <span>启用联网搜索</span>
+              </label>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="sSearchProvider">检索后端</label>
+                  <select id="sSearchProvider">
+                    <option value="searxng">SearXNG（自托管，无需 Key）</option>
+                    <option value="tavily">Tavily API</option>
+                    <option value="brave">Brave Search API</option>
+                  </select>
+                  <span class="field-hint" id="sSearchProviderHint">docker 起一个即可。</span>
+                </div>
+                <div class="field">
+                  <label for="sSearchEndpoint">端点</label>
+                  <input id="sSearchEndpoint" placeholder="http://searxng:8080">
+                  <span class="field-hint" id="sSearchEndpointHint">实例地址，如 http://searxng:8080。</span>
+                </div>
+                <div class="field">
+                  <label for="sSearchKey">API Key</label>
+                  <input id="sSearchKey" type="password" autocomplete="new-password" placeholder="user:pass（可选）">
+                  <span class="field-hint" id="sSearchKeyHint">已设置时留空表示不修改。</span>
+                </div>
+                <div class="field">
+                  <label for="sSearchResults">返回条数</label>
+                  <input id="sSearchResults" type="number" min="1" max="10">
+                </div>
+                <div class="field">
+                  <label for="sSearchTimeout">检索超时（秒）</label>
+                  <input id="sSearchTimeout" type="number" min="1">
+                </div>
+                <div class="field">
+                  <label for="sSearchCache">结果缓存（秒）</label>
+                  <input id="sSearchCache" type="number" min="0">
+                  <span class="field-hint">同一 query 的缓存时长；0 = 不缓存。</span>
+                </div>
+                <div class="field">
+                  <label for="sSearchPageChars">单页正文上限（字符）</label>
+                  <input id="sSearchPageChars" type="number" min="0">
+                </div>
+              </div>
+              <label class="check mt-12" for="sSearchFetch">
+                <input type="checkbox" id="sSearchFetch">
+                <span>抓取网页正文
+                  <span class="check-hint">对前 3 条结果并发抓正文（带 SSRF 防护：只允许 80/443、拒绝内网 IP）。关闭时只用搜索摘要，更快但信息更少。</span>
+                </span>
+              </label>
+              <div class="row mt-12">
+                <span class="field-label">联通性测试</span>
+                <input class="w-280" id="sSearchQuery" placeholder="测试关键词，如：杭州天气">
+                <button class="btn xs" id="testSearch">测试</button>
               </div>
             </div>
           </div>
-
-          <div class="settings-group">
-            <h3>网络</h3>
-            <div class="field-grid">
-              <div class="field">
-                <label for="sCors">CORS 允许来源</label>
-                <input id="sCors" placeholder="http://192.168.1.10:8080">
-                <span class="field-hint">逗号分隔；留空=仅同源。</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="settings-group">
-            <h3>限流</h3>
-            <label class="check" for="sRateLimit">
-              <input type="checkbox" id="sRateLimit">
-              <span>启用按密钥限流
-                <span class="check-hint">只做自我保护：防止失控客户端（循环重试、Agent 死循环）烧光账号积分，<strong>不</strong>承诺密钥之间的公平配额。超限返回 <code>429</code> + <code>Retry-After</code>，被拦下的请求不消耗额度。</span>
-              </span>
-            </label>
-            <div class="field-grid">
-              <div class="field">
-                <label for="sRateQPS">每密钥 QPS</label>
-                <input id="sRateQPS" type="number" min="1">
-                <span class="field-hint">长期允许的请求速率。</span>
-              </div>
-              <div class="field">
-                <label for="sRateBurst">突发上限</label>
-                <input id="sRateBurst" type="number" min="1">
-                <span class="field-hint">瞬时允许的请求数。</span>
-              </div>
-              <div class="field">
-                <label for="sRateConc">并发上限</label>
-                <input id="sRateConc" type="number" min="0">
-                <span class="field-hint">同一密钥的在飞请求数；0 = 不限。</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="settings-group">
-            <h3>计费开关</h3>
-            <label class="check" for="sAllowCredit">
-              <input type="checkbox" id="sAllowCredit">
-              <span>允许真实消耗积分
-                <span class="check-hint">免费权益通道已下线，所有模型都会计费。关闭它等于拒绝一切 <code>/v1/*</code> 模型调用（403），只在临时停服/排障时使用。</span>
-              </span>
-            </label>
-            <label class="check" for="sModelFallback">
-              <input type="checkbox" id="sModelFallback">
-              <span>启用兼容别名（gpt-4o → GLM 等）
-                <span class="check-hint">默认关闭：请求 <code>gpt-4o</code> 等非真实模型名一律返回 <code>404 model_not_found</code>，绝不静默换模型。打开后这些名字会被映射到真实模型，<strong>每次命中都会回写响应头</strong> <code>X-Gateway-Model-Fallback</code> 并记一条告警日志 —— 客户端以为自己换了模型、其实只是换了个名字。要长期使用，请改配「模型别名」。</span>
-              </span>
-            </label>
-          </div>
-
-          <div class="settings-group">
-            <h3>账号调度</h3>
-            <label class="check" for="sCreditPriority">
-              <input type="checkbox" id="sCreditPriority">
-              <span>到期积分优先调度
-                <span class="check-hint">积分快照显示有「即将到期」额度的健康账号会被优先调度，尽量在作废前把额度用掉；池内按到期额度降序轮询，在飞打满单账号并发上限（3）时溢出到其他账号。快照由后台每 10 分钟刷新，账号页的「到期优先」标识即数据来源。</span>
-              </span>
-            </label>
-          </div>
-
-          <div class="settings-group">
-            <h3>访问控制</h3>
-            <label class="check" for="sAllowAnonymous">
-              <input type="checkbox" id="sAllowAnonymous">
-              <span>未签发密钥时允许匿名调用 <code>/v1/*</code>
-                <span class="check-hint">默认只允许本机直连。若网关监听 0.0.0.0（Docker 默认）或被反向代理，勾选它等于把账号额度开放给任何能访问该端口的人 —— 更好的做法是在「密钥」页签发一个 API 密钥。</span>
-              </span>
-            </label>
-          </div>
-
-          <div class="settings-group">
-            <h3>活动福利自动领取</h3>
-            <label class="check" for="sAutoClaim">
-              <input type="checkbox" id="sAutoClaim">
-              <span>每天自动领取运营活动奖励</span>
-            </label>
-            <div class="row mt-12">
-              <span class="field-label">每日领取时刻</span>
-              <input class="w-hour" id="sClaimHour" type="number" min="0" max="23" aria-label="领取小时">
-              <span class="sep muted">:</span>
-              <input class="w-hour" id="sClaimMinute" type="number" min="0" max="59" aria-label="领取分钟">
-            </div>
-            <p class="hint">
-              运营活动的权益按自然日刷新，所以默认 00:05 领。领取接口是幂等的，重复领不会报错。<br>
-              只领服务端说能领的：邀请与学生认证类必须由真实事件触发。
-            </p>
-          </div>
-
-          <div class="settings-group">
-            <h3>凭据续期</h3>
-            <label class="check" for="sAutoRefresh">
-              <input type="checkbox" id="sAutoRefresh">
-              <span>过期时自行用 refresh_token 续期</span>
-            </label>
-            <label class="check mt-12" for="sWriteBack">
-              <input type="checkbox" id="sWriteBack">
-              <span>续期后回写 state.vscdb（让 IDE 复用）</span>
-            </label>
-            <p class="hint">
-              IDE 运行时它会自己续期，网关会跟随读取；只有 IDE 关闭且凭据过期时才会用到这里的续期能力。<br>
-              回写仅在长度完全一致时做原地字节覆写，并在写入前备份 <code>state.vscdb.codearts2api.bak</code>。
-            </p>
-          </div>
-
-          <div class="settings-group">
-            <h3>上游身份头</h3>
-            <p class="group-hint">留空使用与 CodeArts Agent 26.9.902 对齐的缺省值。</p>
-            <div class="field-grid">
-              <div class="field">
-                <label for="sPluginName">plugin-name</label>
-                <input id="sPluginName">
-              </div>
-              <div class="field">
-                <label for="sPluginVersion">plugin-version</label>
-                <input id="sPluginVersion">
-              </div>
-              <div class="field">
-                <label for="sIDEName">ide-name</label>
-                <input id="sIDEName">
-              </div>
-              <div class="field">
-                <label for="sIDEVersion">ide-version</label>
-                <input id="sIDEVersion">
-              </div>
-            </div>
-          </div>
-
-          <div class="settings-group">
-            <h3>模型别名</h3>
-            <p class="group-hint">JSON 对象，例如 <code>{"gpt-4o":"glm-5.3-flash"}</code>。</p>
-            <textarea id="sAliases" spellcheck="false" aria-label="模型别名 JSON"></textarea>
-          </div>
-
-          <div class="settings-group">
-            <h3>管理密码</h3>
-            <p class="group-hint">留空=不修改；设置后管理接口必须携带。</p>
-            <div class="row">
-              <input class="w-280" id="sPw" type="password" placeholder="不修改请留空" autocomplete="new-password"
-                     aria-label="新的管理密码">
-              <button class="btn danger" id="clearPw">清除管理密码</button>
-            </div>
-            <p class="hint">
-              清除后管理接口退回「仅本机直连」兜底；若网关监听 <code>0.0.0.0</code> 或被反向代理，
-              控制台将无法访问。
-            </p>
-          </div>
-
           <div class="row between mt-14">
             <button class="btn primary" id="saveSettings">保存设置</button>
             <button class="btn danger" id="clearStats">重置统计</button>
