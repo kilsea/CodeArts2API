@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,11 +53,16 @@ func validateChatRequest(body []byte) ([]byte, []string, error) {
 	// messages 条数上限：上万条消息本身就是客户端 bug，早点拒掉比打一次上游便宜。
 	if raw, ok := m["messages"]; ok {
 		var list []json.RawMessage
-		if err := json.Unmarshal(raw, &list); err == nil && len(list) > maxMessages {
-			return nil, nil, &apierr.InvalidParamError{
-				Param:  "messages",
-				Reason: "messages 条数超过上限（" + strconv.Itoa(maxMessages) + " 条）",
-				Code:   apierr.CodeRequestTooLarge,
+		if err := json.Unmarshal(raw, &list); err == nil {
+			if len(list) > maxMessages {
+				return nil, nil, &apierr.InvalidParamError{
+					Param:  "messages",
+					Reason: "messages 条数超过上限（" + strconv.Itoa(maxMessages) + " 条）",
+					Code:   apierr.CodeRequestTooLarge,
+				}
+			}
+			if err := checkMessageContents(list); err != nil {
+				return nil, nil, err
 			}
 		}
 	}
@@ -84,9 +91,9 @@ func validateChatRequest(body []byte) ([]byte, []string, error) {
 	}
 
 	// n：上游只产出单个候选。n=1 正常放行，n>1 明确拒绝而不是「返回 1 个却不说」。
-	if raw, ok := m["n"]; ok {
-		var n int
-		if err := json.Unmarshal(raw, &n); err != nil {
+	if raw, ok := m["n"]; ok && string(raw) != "null" {
+		n, ok := decodeInt(raw)
+		if !ok {
 			return nil, nil, &apierr.InvalidParamError{Param: "n", Reason: "n 必须是整数"}
 		}
 		if n != 1 {
@@ -117,6 +124,9 @@ func validateChatRequest(body []byte) ([]byte, []string, error) {
 		}
 	}
 
+	// 整数字段的字面量规范化（见 normalizeIntFields）。
+	changed := normalizeIntFields(m)
+
 	// 上游不支持的字段：摘掉并记录，由调用方写响应头声明。
 	var dropped []string
 	for _, key := range unsupportedFields {
@@ -125,7 +135,7 @@ func validateChatRequest(body []byte) ([]byte, []string, error) {
 			dropped = append(dropped, key)
 		}
 	}
-	if len(dropped) == 0 {
+	if len(dropped) == 0 && !changed {
 		return body, nil, nil
 	}
 	out, err := json.Marshal(m)
@@ -133,6 +143,40 @@ func validateChatRequest(body []byte) ([]byte, []string, error) {
 		return nil, nil, err
 	}
 	return out, dropped, nil
+}
+
+// intFields 是按整数语义解析、但客户端可能写成浮点的字段。
+// top_logprobs 不在这里：它属于 unsupportedFields，会被整字段摘掉，
+// 规范化没有意义。
+var intFields = []string{"n", "max_tokens", "max_completion_tokens"}
+
+// normalizeIntFields 把「整数值但写成浮点」的字段改写成整数文本，返回是否有改动。
+//
+// JSON 没有整数类型：Python / JS 客户端把 1 序列化成 1.0 是常态
+// （openai-python 的 `n=1.0` 就长这样），OpenAI 官方接口照收。
+// 但上游是**按字面量校验类型**的 —— 实测 `n:1.0` / `max_tokens:8.0` 会被回
+// `400 The request param is invalid`。所以网关不能只「放行」，还得把它改写成 1 / 8：
+// 既然我们已经确认它的值是整数，替客户端写规范形式是兼容层该做的事。
+//
+// 只改字面量，不改语义：`1.5` 仍然在校验阶段被拒。
+func normalizeIntFields(m map[string]json.RawMessage) bool {
+	changed := false
+	for _, key := range intFields {
+		raw, ok := m[key]
+		if !ok || string(raw) == "null" {
+			continue
+		}
+		if !bytes.ContainsAny(raw, ".eE") {
+			continue // 已经是整数写法，保持原样（不碰 body 的数字精度）
+		}
+		v, ok := decodeInt(raw)
+		if !ok {
+			continue // 非整数值交给各字段自己的校验报错
+		}
+		m[key] = []byte(strconv.FormatInt(v, 10))
+		changed = true
+	}
+	return changed
 }
 
 // checkRange 校验一个可选的数值字段落在 [lo, hi] 内。
@@ -160,12 +204,85 @@ func checkPositiveInt(m map[string]json.RawMessage, key string) error {
 	if !ok || string(raw) == "null" {
 		return nil
 	}
-	var v int
-	if err := json.Unmarshal(raw, &v); err != nil {
+	v, ok := decodeInt(raw)
+	if !ok {
 		return &apierr.InvalidParamError{Param: key, Reason: key + " 必须是整数"}
 	}
 	if v <= 0 {
-		return &apierr.InvalidParamError{Param: key, Reason: key + " 必须大于 0，收到 " + strconv.Itoa(v)}
+		return &apierr.InvalidParamError{Param: key, Reason: key + " 必须大于 0，收到 " + strconv.FormatInt(v, 10)}
+	}
+	return nil
+}
+
+// decodeInt 解析一个 JSON 数字并确认它的值是个整数。
+//
+// JSON 没有整数类型：Python / JS 客户端把 1 序列化成 1.0 是常态
+// （openai-python 的 `n=1.0` 就长这样），OpenAI 官方接口照收。
+// 以前这里直接 Unmarshal 到 int，1.0 会解析失败 → 400，
+// 把一个合法请求挡在门外。现在只拒绝**真正的**非整数（如 1.5）。
+func decodeInt(raw json.RawMessage) (int64, bool) {
+	// json.Number 的底层是 string，Decoder 会宽容地把 JSON 字符串 "1"
+	// 也解成 Number —— 那不是数字字面量，必须拒绝（否则 max_tokens:"100"
+	// 会一路透传到上游再被拒）。
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] == '"' {
+		return 0, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var num json.Number
+	if err := dec.Decode(&num); err != nil {
+		return 0, false
+	}
+	if i, err := num.Int64(); err == nil {
+		return i, true
+	}
+	f, err := num.Float64()
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	if f != math.Trunc(f) || f > math.MaxInt64 || f < math.MinInt64 {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+// checkMessageContents 拒绝「content 为 null 且没有 tool_calls」的消息。
+//
+// 这种消息没有任何可发给上游的内容，上游会回
+// `ModelArts.81001 未正常接收到prompt参数` —— 打一次上游就是一次真实扣积分，
+// 而且客户端拿到的是一句跟真实原因无关的话。
+//
+// assistant 消息允许 content=null，只要带了 tool_calls / function_call
+// （那是标准的「只要调用、不要文本」写法）。
+func checkMessageContents(list []json.RawMessage) error {
+	for i, raw := range list {
+		var msg map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue // 形状不对的消息交给 normalizeRoles 报
+		}
+		if c, ok := msg["content"]; ok && string(c) != "null" {
+			// content 只能是字符串或分段数组。写成数字 / 布尔 / 对象时
+			// 上游会回 `The type of content should be string or array` ——
+			// 打一次上游就是一次真实扣积分，而这完全是客户端写错了。
+			if t := bytes.TrimSpace(c); len(t) > 0 && t[0] != '"' && t[0] != '[' {
+				return &apierr.InvalidParamError{
+					Param:  "messages[" + strconv.Itoa(i) + "].content",
+					Reason: "content 只能是字符串或内容分段数组",
+				}
+			}
+			continue
+		}
+		if _, ok := msg["tool_calls"]; ok {
+			continue
+		}
+		if _, ok := msg["function_call"]; ok {
+			continue
+		}
+		return &apierr.InvalidParamError{
+			Param:  "messages[" + strconv.Itoa(i) + "].content",
+			Reason: "content 不能为空：该消息既没有文本内容，也没有 tool_calls",
+		}
 	}
 	return nil
 }

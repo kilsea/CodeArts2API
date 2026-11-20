@@ -131,18 +131,20 @@
     return ok;
   }
   // copyText 优先用异步剪贴板 API（127.0.0.1 属于安全上下文），
-  // 失败再回退到已废弃的 execCommand。
+  // 失败再回退到已废弃的 execCommand —— 内网用 http://<IP>:<端口> 访问控制台时
+  // navigator.clipboard 在非安全上下文里根本不存在，只靠它等于按钮失灵。
+  // 返回 Promise<boolean>，调用方需要知道成没成（比如「只显示一次」的密钥）。
   function copyText(text, okMsg){
     var done = function(ok){
       toast(ok ? (okMsg || "已复制") : "复制失败，请手动选择后按 Ctrl+C", ok ? "ok" : "err");
+      return ok;
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       return navigator.clipboard.writeText(text).then(
-        function(){ done(true); },
-        function(){ done(legacyCopy(text)); });
+        function(){ return done(true); },
+        function(){ return done(legacyCopy(text)); });
     }
-    done(legacyCopy(text));
-    return Promise.resolve();
+    return Promise.resolve(done(legacyCopy(text)));
   }
 
   function fmtTime(s){
@@ -498,6 +500,12 @@
       var st = cell("");
       st.appendChild(pill(k.enabled ? "启用" : "停用", k.enabled ? "ok" : ""));
       var ops = cell("", "actions-cell");
+      // 列表里只有脱敏值，复制必须回源取明文（一次一个、带管理鉴权、留审计）。
+      ops.appendChild(btn("复制", "xs", function(){
+        return api("/admin/api/keys?reveal=" + encodeURIComponent(k.key)).then(function(r){
+          return copyText(r.key, "已复制密钥");
+        });
+      }));
       ops.appendChild(btn(k.enabled ? "停用" : "启用", "xs", function(){ keyOp("toggle", k.key); }));
       ops.appendChild(btn("删除", "xs danger", function(){
         if (confirm("确定删除该密钥？")) keyOp("key", k.key);
@@ -1039,9 +1047,12 @@
   });
   on("#addKey", function(){
     api("/admin/api/keys", {method:"POST", body:{name:$("#keyName").value.trim()}}).then(function(r){
-      toast("已创建密钥（仅显示一次）：\n" + r.key, "ok");
       $("#keyName").value = "";
-      return refresh();
+      // 明文只出现这一次：能自动复制就先复制，复制失败才把全文打出来。
+      return copyText(r.key, "已创建密钥并复制到剪贴板").then(function(ok){
+        if (!ok) toast("已创建密钥（仅显示一次，请立即保存）：\n" + r.key, "ok");
+        return refresh();
+      });
     }).catch(function(e){ toast("创建失败：" + e.message, "err"); });
   });
   on("#reloadLogs", refreshLogs);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -274,6 +275,12 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		// 显式取回单个密钥的明文（控制台的「复制」按钮用）。
+		// 列表永远只给脱敏值，明文必须一次一个、带管理鉴权、且留审计。
+		if ref := r.URL.Query().Get("reveal"); ref != "" {
+			s.handleKeyReveal(w, r, ref)
+			return
+		}
 		keys := s.Store.Keys()
 		safe := make([]map[string]any, 0, len(keys))
 		for _, k := range keys {
@@ -304,6 +311,24 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法", "invalid_request_error")
 	}
+}
+
+// handleKeyReveal 返回单个密钥的明文。
+//
+// 为什么不直接把明文放进列表：控制台的截图、浏览器的会话恢复、
+// 反代的访问日志里都不该出现一个可直接使用的密钥。脱敏列表 +
+// 「点一下才取明文」把风险压到一次显式动作上，并且这次动作会留下审计日志。
+func (s *Server) handleKeyReveal(w http.ResponseWriter, r *http.Request, ref string) {
+	for _, k := range s.Store.Keys() {
+		if k.Key != ref && codearts.Mask(k.Key) != ref {
+			continue
+		}
+		log.Printf("[audit] 取回密钥明文 %s（名称=%q 来源=%s）",
+			codearts.Mask(k.Key), k.Name, r.RemoteAddr)
+		writeJSON(w, http.StatusOK, map[string]any{"key": k.Key})
+		return
+	}
+	writeErr(w, http.StatusNotFound, "密钥不存在", "invalid_request_error")
 }
 
 // handleAdminLogs 返回或清空请求日志。

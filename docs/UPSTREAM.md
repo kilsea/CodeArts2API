@@ -315,6 +315,7 @@ body.model = "glm-5.3 "（尾随空格）
 | `InferHub.001001005.400` | 请求参数越界（`temperature` / `max_tokens` / tools 超长等） | `400 invalid_request_error`；**不计账号故障、不换号重试** | `client_request` | `invalid_value` |
 | `InferHub.001001011.406` | 模型名与 `model-id` 不一致 | `400 invalid_request_error` | `client_request` | `model_name_mismatch` |
 | `InferHub.001001020.406` | 请求模型不支持多模态（给纯文本模型发图片），HTTP 406 | `400 invalid_request_error`；**不计账号故障、不换号重试** | `client_request` | `model_not_multimodal` |
+| `ModelArts.81001` | 参数非法（实测：`messages` 里 `content` 为 `null`、`tool` 消息缺少可匹配的 `tool_call` 时返回 `未正常接收到prompt参数`） | 网关**前置拦截**常见成因（`content` 为 `null` 且无 `tool_calls` → `400 invalid_value`），拦截不到才透传上游；**不计账号故障** | `client_request` | `invalid_value` |
 | `ModelArts.81011` | 输入内容命中审核（实测 HTTP 403，`Input image May contain sensitive information`；纯文本被拒时只回模板话术、不带业务码） | `400 invalid_request_error`；**不计账号故障、不换号重试**（换号同样被拒，只会白烧积分） | `moderation` | `content_policy_violation` |
 | `InferHub.002002009.404` | 复合码，末段是真实状态码 | 按末段映射（此处 `404`） | `upstream` | `upstream_error`（附原文） |
 | `TM.00001027` | 未通过学生认证（education 通道） | `400`（普通账号不应命中） | `client_request` | `invalid_value` |

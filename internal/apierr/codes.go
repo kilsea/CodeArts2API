@@ -108,6 +108,9 @@ var upstreamCodes = []upstreamCode{
 	{"InferHub.001001011", CodeModelNameMismatch, "model"},
 	{"InferHub.001001020", CodeModelNotMultimodal, "messages"},
 	{"ModelArts.81011", CodeContentPolicy, ""},
+	// 81001 = 参数非法。实测：messages 里出现 null content、或 tool 消息缺少
+	// 可匹配的 tool_call 时返回。不指定 param —— 上游不告诉我们是哪个字段。
+	{"ModelArts.81001", CodeInvalidValue, ""},
 	{"APIG.0301", CodeCredentials, ""},
 	{"APIG.0303", CodeCredentials, ""},
 	{"STS5.1804", CodeCredentials, ""},

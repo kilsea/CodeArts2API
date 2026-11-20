@@ -319,6 +319,13 @@ func (s *Server) ApplyRateLimit() {
 // 另外对写操作做同源校验，阻断跨站请求伪造。
 func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// 管理接口的响应一律不得缓存：`?reveal=` 会返回 API 密钥明文，
+		// 状态接口包含账号与登录态摘要。GET + 200 的 JSON 在某些浏览器/
+		// 中间代理上会被缓存，一个明文密钥就这么留在了磁盘里。
+		h := w.Header()
+		h.Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+		h.Set("Pragma", "no-cache")
+
 		if pw := s.Store.Settings().AdminPassword; pw != "" {
 			if !secureEqual(adminPasswordFrom(r), pw) {
 				writeErr(w, http.StatusUnauthorized, "管理密码缺失或错误", "invalid_request_error")

@@ -301,7 +301,7 @@ func (c *Client) ChatStream(ctx context.Context, sess *Session, model string, bo
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return &UpstreamError{Status: resp.StatusCode, Message: truncate(string(raw), 600)}
+		return &UpstreamError{Status: resp.StatusCode, Message: upstreamErrorText(raw)}
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -341,7 +341,7 @@ func (c *Client) Chat(ctx context.Context, sess *Session, model string, body []b
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &UpstreamError{Status: resp.StatusCode, Message: truncate(string(raw), 600)}
+		return nil, &UpstreamError{Status: resp.StatusCode, Message: upstreamErrorText(raw)}
 	}
 	return raw, nil
 }
@@ -471,6 +471,39 @@ func statusFromCode(code string) int {
 }
 
 // truncate 截断长字符串，用于错误信息。
+// upstreamErrorText 把上游的错误响应体压成一句能读的话。
+//
+// 上游的错误体是嵌套 JSON（`{"error":{"code":"ModelArts.81001","message":"…"}}`），
+// 以前整段塞进 message，客户端看到的是
+// `上游 HTTP 400: {"error":{"code":…,"span_id":…}}` —— 一行 JSON 里
+// 真正有用的只有中间那句中文，其余全是噪声，还容易被误当成结构化字段。
+//
+// 提取顺序：error.message → error_msg → message → 原文（截断）。
+// 原文里没有任何可读信息时（空 body）返回空串 ——
+// 「空 body 拒绝」是判断「模型只支持流式」的依据（见 IsEmptyRejection），
+// 不能被这里改成 "{}" 之类的东西。
+func upstreamErrorText(raw []byte) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return ""
+	}
+	var probe struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		ErrorMsg string `json:"error_msg"`
+		Message  string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &probe); err == nil {
+		for _, s := range []string{probe.Error.Message, probe.ErrorMsg, probe.Message} {
+			if strings.TrimSpace(s) != "" {
+				return truncate(s, 600)
+			}
+		}
+	}
+	return truncate(trimmed, 600)
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

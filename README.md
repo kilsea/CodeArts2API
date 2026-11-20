@@ -1,9 +1,12 @@
 # CodeArts2API
 
-> 源码仓库：<https://github.com/tomcat927/CodeArts2API>
+> 源码仓库：<https://github.com/kilsea/CodeArts2API>
 >
 > 发布产物（二进制 / 容器镜像）由 GitHub Actions 在该仓库的 `v*` tag 上自动构建：
-> `ghcr.io/tomcat927/codearts2api`。
+> `ghcr.io/kilsea/codearts2api`。
+>
+> 本项目源自 [tomcat927/CodeArts2API](https://github.com/tomcat927/CodeArts2API)，
+> 上游仍作为 `upstream` 远端保留，便于同步其改动。
 
 把本机 **CodeArts Agent**（华为云码道 / CodeArts Doer for Coding）桌面端的
 上游模型服务，逆向复刻成一个 **OpenAI 兼容的 Go 网关**。

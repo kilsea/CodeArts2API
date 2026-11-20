@@ -155,7 +155,13 @@ func From(err error) Error {
 	// 参数越界 / 类型不对 / 不受支持：同样是纯粹的客户端问题。
 	var ipe *InvalidParamError
 	if errors.As(err, &ipe) {
-		return coded(Error{Status: http.StatusBadRequest, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}, err)
+		// request_too_large 必须配 413：它描述的是「请求太大」而不是
+		// 「参数写错了」。客户端与 CDN / 反代都靠状态码决定要不要重试。
+		status := http.StatusBadRequest
+		if ipe.APICode() == CodeRequestTooLarge {
+			status = http.StatusRequestEntityTooLarge
+		}
+		return coded(Error{Status: status, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}, err)
 	}
 
 	var ue *codearts.UpstreamError
