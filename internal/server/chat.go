@@ -37,6 +37,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
+	r = withRequestIDValue(w, r)
 
 	body, ok := readBody(w, r, errOpenAI)
 	if !ok {
@@ -44,8 +45,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req chatRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeRequestErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error(),
+	parseErr := json.Unmarshal(body, &req)
+	// 采样必须在任何改写之前：重放要复现客户端的**真实**请求（含非法 role /
+	// 越界参数），存网关改写后的体等于让重放永远成功，失去意义。
+	s.dumps.Record(requestID(r.Context()), r.URL.Path, req.Model, req.Stream, body)
+	if parseErr != nil {
+		writeRequestErr(w, http.StatusBadRequest, "请求体解析失败: "+parseErr.Error(),
 			"invalid_request_error", apierr.CodeInvalidValue, "")
 		return
 	}
@@ -298,6 +303,15 @@ const (
 	transientBaseWait = time.Second
 	// transientMaxWait 是单次退避上限。
 	transientMaxWait = 3 * time.Second
+	// queueWaitTimeout 是「等账号并发槽位」的最长排队时长。
+	//
+	// 上游每账号硬上限 3 个并发会话。以前槽位满了也照打，换回一个
+	// TM.00001041（临时性错误）后白白消耗一次重试；现在改成先在网关里排队。
+	// 20 秒的取舍：一次对话动辄几十秒，排 20 秒仍比「被上游拒绝 + 退避重试」
+	// 快，也不会让客户端觉得卡死。
+	queueWaitTimeout = 20 * time.Second
+	// queueRetryAfter 是排队超时后给客户端的建议重试间隔。
+	queueRetryAfter = 5 * time.Second
 )
 
 // transientBackoff 返回第 n 次临时性故障后的退避时长（n 从 1 开始）：
@@ -350,12 +364,26 @@ func (s *Server) withAccountRetry(ctx context.Context, timeout time.Duration, fn
 		}
 		tried++
 		used = acct
-		// 在飞计数供 NextAccount 的「到期积分优先」跳过已打满并发上限的账号
-		s.Store.AcquireAccount(acct.ID)
+		// 每账号并发闸门：上游每账号硬上限 3 个并发会话，超限时上游回
+		// TM.00001041（临时性错误）。在这里排队，把「打到上游被拒 + 退避重试」
+		// 换成「在网关里等一个槽位」。
+		//
+		// 排队超时与客户端断开必须分开处理：前者该回 429 + Retry-After，
+		// 后者什么都不该回（客户端已经不在了）。
+		qctx, qcancel := context.WithTimeout(ctx, queueWaitTimeout)
+		slotErr := s.Store.AcquireSlot(qctx, acct.ID)
+		qcancel()
+		if slotErr != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			lastErr = &apierr.AccountBusy{RetryAfter: queueRetryAfter}
+			break
+		}
 		cctx, cancel := context.WithTimeout(ctx, timeout)
 		err := fn(cctx, acct)
 		cancel()
-		s.Store.ReleaseAccount(acct.ID)
+		s.Store.ReleaseSlot(acct.ID)
 
 		if err == nil {
 			s.Store.MarkAccountResult(acct.ID, true, "")

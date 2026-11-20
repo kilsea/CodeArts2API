@@ -106,6 +106,14 @@ GET /v1/model/builtin                 -> 200（8 个模型，全部 enable:true�
 原来那条「无法识别的模型名必须落到 benefit 通道」的约束随之失效 ——
 现在**无法识别的模型名直接报 404**，绝不静默换成别的模型扣费。
 
+> **2026-11-20 修正（网关侧）**：上面这句话以前与实现不符 ——
+> `registry` 里有一张内置别名表（`gpt-4o` → `glm-5.3`、`claude-sonnet-4` →
+> `GLM-5.2` …），请求 `gpt-4o` 会拿到 200，实际由 GLM 回答并真实扣积分，
+> 既不报错也不告警。现在这些名字默认 **404**；只有控制台显式打开
+> 「启用兼容别名」（`model_fallback`）才生效，且每次命中都会回写响应头
+> `X-Gateway-Model-Fallback` 并记告警日志。响应体里的 `model` 始终是
+> 实际执行的模型。详见 [`COMPAT.md` §4](COMPAT.md)。
+
 ### 3.1 积分套餐与用量（`/snap-manager/v1/statistics/plugin`）
 
 积分通道的「额度」不在已下线的 benefit 接口里，而在 snap-manager 的统计插件接口。
@@ -213,15 +221,25 @@ Authorization = SDK-HMAC-SHA256 Access=<AK>, SignedHeaders=<...>, Signature=<...
 
 ## 7. 上游怪癖
 
-### 7.1 `glm-5.3` 只支持流式
+### 7.1 `glm-5.3` 的非流式支持会漂移
 
 ```text
-glm-5.3  stream=false  → HTTP 400，body 长度 0
-glm-5.3  stream=true   → 200，正常 SSE（含工具调用）
+2026-10 实测：glm-5.3  stream=false  → HTTP 400，body 长度 0
+              glm-5.3  stream=true   → 200，正常 SSE（含工具调用）
+
+2026-11-20 实测：glm-5.3  stream=false → 200，正常一次性 JSON
 ```
 
-网关对策：检测到「4xx + 空 body」自动改用流式，本地聚合后以非流式返回；
-并把该模型标记为 `stream_only`，后续直接走流式。见 `registry.Model.StreamOnly`。
+**上游行为会变，不要把「只支持流式」当常量。** 网关的处理方式：
+
+1. 请求路径遇到「4xx + 空 body」→ 自动改用流式，本地聚合后以非流式返回，
+   并把该模型标记为 `stream_only`（`registry.Model.StreamOnly`）；
+2. 标记落盘到状态文件的 `capabilities`，重启后不必重新探测（探测 = 真实扣积分）；
+3. 控制台「模型测活」发现非流式恢复可用 → **反向清除**标记；
+4. 测活对「非流式空 400 + 流式 200」的模型报「可用 + stream_only」，
+   而不是误判成不可用（以前的实现正是这样误判的）。
+
+能力矩阵的字段与规则见 [`COMPAT.md` §7](COMPAT.md)。
 
 ### 7.2 模型名必须与请求头完全一致
 
@@ -245,6 +263,12 @@ body.model = "glm-5.3 "（尾随空格）
 | 复合码 `服务.业务号.状态码` | `InferHub.002002009.404` | 取末段 → `404` |
 
 网关在 `statusFromCode()` 里做这个提取，**取不到一律兜底 400，绝不返回 200**。
+
+> 2026-11-20 修正：`IsUpstreamBusinessError` 以前只返回 `error_msg`，把
+> `error_code` 丢掉了 —— 于是网关只能靠 HTTP 状态码猜分类，无法区分
+> `TM.00001041`（并发上限）与 `InferHub.001001005`（参数越界）。
+> 现在统一返回 `error_code + ": " + error_msg`，与 `newBusinessError` 同口径。
+> 上游业务码到网关规范码的映射表见 [`COMPAT.md` §5.2](COMPAT.md)。
 
 > 历史 bug：早期实现固定写 `Status: http.StatusOK`，于是日志里出现自相矛盾的
 > 「上游 HTTP 200: The request param is invalid」，真实业务码被丢弃；更严重的是
@@ -280,20 +304,23 @@ body.model = "glm-5.3 "（尾随空格）
 
 ## 8. 错误码对照
 
-| 上游错误码 | 含义 | 网关处理 | 日志分类（`err_class`） |
-| --- | --- | --- | --- |
-| `TM.00001041` | 并发会话数已达上限（HTTP 400） | 按临时故障退避重试（**不计入账号失败**），仍失败则回 `429` | `transient` |
-| `APIG.0301` / `APIG.0303` | 签名校验失败 / 凭据失效 | 翻译成「登录态失效，请重新登录」→ `502 credentials_error` | `credentials` |
-| `STS5.1804` | refresh_token 已过期 | 同上 | `credentials` |
-| `STS5.1806` | refresh_token 已被使用（单次 + 轮转） | 同上；提示「IDE 与网关同时续期会互相作废」 | `credentials` |
-| `invalid_grant` | refresh_token 失效 | 同上 | `credentials` |
-| `4005` | 该通道不支持此模型 | `400 invalid_request_error`（`statusFromCode` 兜底） | `client_request` |
-| `InferHub.001001005.400` | 请求参数越界（`temperature` / `max_tokens` / tools 超长等） | `400 invalid_request_error`；**不计账号故障、不换号重试** | `client_request` |
-| `InferHub.001001011.406` | 模型名与 `model-id` 不一致 | `400 invalid_request_error` | `client_request` |
-| `InferHub.001001020.406` | 请求模型不支持多模态（给纯文本模型发图片），HTTP 406 | `400 invalid_request_error`；**不计账号故障、不换号重试** | `client_request` |
-| `ModelArts.81011` | 输入内容命中审核（实测 HTTP 403，`Input image May contain sensitive information`；纯文本被拒时只回模板话术、不带业务码） | `400 invalid_request_error`；**不计账号故障、不换号重试**（换号同样被拒，只会白烧积分） | `moderation` |
-| `InferHub.002002009.404` | 复合码，末段是真实状态码 | 按末段映射（此处 `404`） | `upstream` |
-| `TM.00001027` | 未通过学生认证（education 通道） | `400`（普通账号不应命中） | `client_request` |
+| 上游错误码 | 含义 | 网关处理 | 日志分类（`err_class`） | 对外 `code` |
+| --- | --- | --- | --- | --- |
+| `TM.00001041` | 并发会话数已达上限（HTTP 400） | 网关先排队（每账号 3 个槽位）；仍打满则按临时故障退避重试（**不计入账号失败**），最终回 `429` | `transient` | `concurrency_limit_exceeded` |
+| `APIG.0301` / `APIG.0303` | 签名校验失败 / 凭据失效 | 翻译成「登录态失效，请重新登录」→ `502 credentials_error` | `credentials` | `credentials_expired` |
+| `STS5.1804` | refresh_token 已过期 | 同上 | `credentials` | `credentials_expired` |
+| `STS5.1806` | refresh_token 已被使用（单次 + 轮转） | 同上；提示「IDE 与网关同时续期会互相作废」 | `credentials` | `credentials_expired` |
+| `invalid_grant` | refresh_token 失效 | 同上 | `credentials` | `credentials_expired` |
+| `4005` | 该通道不支持此模型 | `400 invalid_request_error`（`statusFromCode` 兜底） | `client_request` | `model_not_found` |
+| `InferHub.001001005.400` | 请求参数越界（`temperature` / `max_tokens` / tools 超长等） | `400 invalid_request_error`；**不计账号故障、不换号重试** | `client_request` | `invalid_value` |
+| `InferHub.001001011.406` | 模型名与 `model-id` 不一致 | `400 invalid_request_error` | `client_request` | `model_name_mismatch` |
+| `InferHub.001001020.406` | 请求模型不支持多模态（给纯文本模型发图片），HTTP 406 | `400 invalid_request_error`；**不计账号故障、不换号重试** | `client_request` | `model_not_multimodal` |
+| `ModelArts.81011` | 输入内容命中审核（实测 HTTP 403，`Input image May contain sensitive information`；纯文本被拒时只回模板话术、不带业务码） | `400 invalid_request_error`；**不计账号故障、不换号重试**（换号同样被拒，只会白烧积分） | `moderation` | `content_policy_violation` |
+| `InferHub.002002009.404` | 复合码，末段是真实状态码 | 按末段映射（此处 `404`） | `upstream` | `upstream_error`（附原文） |
+| `TM.00001027` | 未通过学生认证（education 通道） | `400`（普通账号不应命中） | `client_request` | `invalid_value` |
+
+> 映射表在 `internal/apierr/codes.go`，有单测强制「表里的每个码都必须出现在
+> 本文件的 §8」—— 加映射不改文档会直接测试失败。
 
 > 上面 `APIG.*` / `STS5.*` / `invalid_grant` 即使以 **HTTP 400** 返回，也必须计入账号故障：
 > `IsClientRequestError` 里有 `credentialCodes` 排除表，不能只看状态码是不是 4xx。

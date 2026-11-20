@@ -4,6 +4,7 @@
 | --- | --- | --- |
 | [../README.md](../README.md) | 项目是什么、怎么跑起来、有哪些接口 | 所有人 |
 | [UPSTREAM.md](UPSTREAM.md) | **当前**上游协议事实：端点、身份头、通道、签名、错误码 | 改上游层的人 |
+| [COMPAT.md](COMPAT.md) | **客户端兼容矩阵**：角色映射、参数策略、错误码、不支持清单 | 接入方 / 所有人 |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | 报错了怎么办（症状 → 原因 → 处置） | 使用者 / 运维 |
 | [../SECURITY.md](../SECURITY.md) | 威胁模型、已实施防护、残余风险、加固清单 | 部署者 / 安全审阅 |
 | [../goal-and-requirements.md](../goal-and-requirements.md) | 产品是什么、为什么、明确不做什么 | 所有人 |
@@ -20,6 +21,11 @@
 
 1. `README.md` 的「一、快速开始」
 2. 卡住了 → `TROUBLESHOOTING.md`
+
+### 要接自己的客户端
+
+1. [`COMPAT.md`](COMPAT.md)：支持什么、不支持什么、错误码怎么读
+2. `scripts/contract_test.sh`：对着运行中的网关自检 8 条契约
 
 ### 要部署到容器 / 服务器
 

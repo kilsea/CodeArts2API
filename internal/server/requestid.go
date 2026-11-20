@@ -33,6 +33,25 @@ func (s *Server) withRequestID(next http.Handler) http.Handler {
 	})
 }
 
+// withRequestIDValue 确保请求上下文里带有关联 id，并把它写进响应头。
+//
+// 正常路径由 withRequestID 中间件提供；这里是兜底，让 handler 自己也能
+// 保证「响应头一定带 X-Request-Id」这条契约 —— 测试与重放接口都是直接
+// 调用 handler，不经过中间件。
+func withRequestIDValue(w http.ResponseWriter, r *http.Request) *http.Request {
+	if id := requestID(r.Context()); id != "" {
+		return r
+	}
+	id := sanitizeRequestID(r.Header.Get(requestIDHeader))
+	if id == "" {
+		id = codearts.RandomHex(8)
+	}
+	if w.Header().Get(requestIDHeader) == "" {
+		w.Header().Set(requestIDHeader, id)
+	}
+	return r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id))
+}
+
 // requestID 取出当前请求的关联 id（没有时返回空串）。
 func requestID(ctx context.Context) string {
 	if ctx == nil {

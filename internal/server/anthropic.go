@@ -32,14 +32,18 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	start := time.Now()
+	r = withRequestIDValue(w, r)
 
 	body, ok := readBody(w, r, errAnthropic)
 	if !ok {
 		return
 	}
 	var req protocol.Request
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "请求体解析失败: "+err.Error())
+	parseErr := json.Unmarshal(body, &req)
+	// 采样在任何改写之前（见 dump.go）：重放要复现客户端的真实请求。
+	s.dumps.Record(requestID(r.Context()), r.URL.Path, req.Model, req.Stream, body)
+	if parseErr != nil {
+		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "请求体解析失败: "+parseErr.Error())
 		return
 	}
 	if len(req.Messages) == 0 {

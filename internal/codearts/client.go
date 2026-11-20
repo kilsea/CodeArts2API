@@ -380,6 +380,44 @@ func (c *Client) Probe(ctx context.Context, sess *Session, model string) error {
 	return detectUpstreamError(raw)
 }
 
+// ProbeStream 用一次最小流式请求探测模型是否可用。
+//
+// 与 Probe 配合才能区分两种截然不同的情况：
+//
+//	非流式 400 空 body + 流式 200  → 模型「只支持流式」（能力问题，仍可用）
+//	非流式 400 空 body + 流式 400  → 模型真的不可用（账号 / 权限问题）
+//
+// 只用 Probe 会把第一种误判成「不可用」，把一个能用的模型标成红叉。
+func (c *Client) ProbeStream(ctx context.Context, sess *Session, model string) error {
+	if model == "" {
+		model = DefaultModel
+	}
+	body, err := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+		"max_tokens": 8,
+		"stream":     true,
+	})
+	if err != nil {
+		return err
+	}
+	got := false
+	err = c.ChatStream(ctx, sess, model, body, func(chunk []byte) error {
+		if msg, status, bad := IsUpstreamBusinessError(chunk); bad {
+			return UpstreamBusinessError(status, msg)
+		}
+		got = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if !got {
+		return &UpstreamError{Status: http.StatusBadGateway, Message: "流式探测没有收到任何分片"}
+	}
+	return nil
+}
+
 // detectUpstreamError 识别「HTTP 200 但业务失败」的响应。
 //
 // 上游对未知模型、参数非法等错误会返回 200 + {"error_code":"4005","error_msg":"..."}，

@@ -10,6 +10,32 @@ import (
 	"codearts2api/internal/codearts"
 )
 
+// Capability 是**实测得到**的模型能力快照。
+//
+// 为什么需要它：上游行为会变。README 曾记录 glm-5.3 只支持流式，
+// 而 2026-11-20 实测非流式也返回 200；反过来也会有模型从「支持」变成
+// 「只支持流式」。网关如果不记这些事实，就只能每次多打一次空枪，
+// 或者（更糟）把「只支持流式」误判成「模型不可用」。
+//
+// 字段含义：
+//   - StreamOnly  非流式会得到空 body 的 400，必须走流式 + 本地聚合；
+//   - Tools       支持 tools / tool_calls；
+//   - Images      支持图片输入（多模态）；
+//   - ResponseFormat 支持 response_format（json_object 等）；
+//   - ProbedAt    最后一次实测的时间戳（0 表示来自配置 / 观测，未实测）。
+//
+// 保守原则：**未知就是可用**。没探测到的能力不写 false，而是整个字段省略，
+// 网关因此不会因为「没探测过」而拒绝请求 —— 探测失败绝不能阻断流量。
+type Capability struct {
+	StreamOnly     bool  `json:"stream_only,omitempty"`
+	Tools          bool  `json:"tools,omitempty"`
+	Images         bool  `json:"images,omitempty"`
+	ResponseFormat bool  `json:"response_format,omitempty"`
+	ProbedAt       int64 `json:"probed_at,omitempty"`
+	// Source 标记来源：probe=主动测活，observed=请求路径观测到。
+	Source string `json:"source,omitempty"`
+}
+
 // Model 是一个对外可用的模型。
 type Model struct {
 	ID        string `json:"id"`
@@ -24,6 +50,8 @@ type Model struct {
 	// StreamOnly 标记上游只支持流式：非流式会返回一个空 body 的 400。
 	// 网关会自动降级为「流式 + 本地聚合」，这里只是避免每次多打一次空枪。
 	StreamOnly bool `json:"stream_only,omitempty"`
+	// Capabilities 是实测到的能力快照；未探测过时为 nil（未知 = 可用）。
+	Capabilities *Capability `json:"capabilities,omitempty"`
 }
 
 // Fallback 是上游模型接口不可达时使用的兜底清单。
@@ -97,24 +125,101 @@ type Registry struct {
 	mu      sync.RWMutex
 	models  []Model
 	updated time.Time
+	// caps 是实测到的能力快照，key 为小写模型 ID。
+	// 与 models 分开存：模型清单会整份被上游刷新替换，能力是网关自己
+	// 积累的事实，不该跟着一起丢。
+	caps map[string]Capability
+	// persist 在能力变更时被调用（由 server 接到 store，实现落盘）。
+	// 为 nil 时只更新内存（测试 / 独立使用场景）。
+	persist func(id string, cap Capability)
 }
 
 // New 构造注册表，初始使用兜底清单。
 func New() *Registry {
-	r := &Registry{}
+	r := &Registry{caps: map[string]Capability{}}
 	r.models = append([]Model(nil), Fallback...)
 	return r
+}
+
+// SetPersist 设置能力变更的回调（server 启动时接到 store）。
+func (r *Registry) SetPersist(fn func(id string, cap Capability)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.persist = fn
+}
+
+// ApplyCapabilities 用持久化的能力快照覆盖当前记录。
+//
+// 启动时调用一次：能力是跨进程的事实，重启不该让它们归零。
+func (r *Registry) ApplyCapabilities(caps map[string]Capability) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.caps == nil {
+		r.caps = map[string]Capability{}
+	}
+	for id, c := range caps {
+		r.caps[strings.ToLower(id)] = c
+	}
+	r.applyCapsLocked()
+}
+
+// Capabilities 返回能力快照的副本（供控制台 / 落盘使用）。
+func (r *Registry) Capabilities() map[string]Capability {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]Capability, len(r.caps))
+	for k, v := range r.caps {
+		out[k] = v
+	}
+	return out
+}
+
+// Capability 返回某个模型的能力快照。
+func (r *Registry) Capability(id string) (Capability, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	c, ok := r.caps[strings.ToLower(id)]
+	return c, ok
+}
+
+// applyCapsLocked 把能力快照投影到模型上。必须在持有写锁时调用。
+func (r *Registry) applyCapsLocked() {
+	for i := range r.models {
+		if c, ok := r.caps[strings.ToLower(r.models[i].ID)]; ok {
+			cc := c
+			r.models[i].Capabilities = &cc
+			r.models[i].StreamOnly = c.StreamOnly
+		}
+	}
+}
+
+// setCapabilityLocked 写入一条能力记录，返回落盘回调供调用方在**解锁后**执行。
+//
+// 回调必须放到锁外：它会写状态文件（磁盘 I/O），在 registry 写锁里做
+// 会把所有 /v1/models 读取堵住。
+func (r *Registry) setCapabilityLocked(id string, c Capability) (string, func(string, Capability)) {
+	if r.caps == nil {
+		r.caps = map[string]Capability{}
+	}
+	key := strings.ToLower(id)
+	r.caps[key] = c
+	r.applyCapsLocked()
+	return key, r.persist
 }
 
 // Replace 用上游返回的模型清单整体替换当前清单。
 //
 // 上游清单是唯一的真相来源：拿不到就是拿不到，不做「部分合并」——
 // 否则已下线的模型会一直残留在 /v1/models 里，客户端拿到后必然报错。
+//
+// 能力快照（caps）**不**跟着被替换：它是网关自己积累的事实，
+// 刷新清单后重新投影一遍即可。
 func (r *Registry) Replace(models []Model) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.models = append([]Model(nil), models...)
 	r.updated = time.Now()
+	r.applyCapsLocked()
 }
 
 // List 返回当前模型清单（含自定义别名）。
@@ -162,12 +267,52 @@ func (r *Registry) List(custom map[string]string) []Model {
 // 这里记下来只是省掉每次多打一次空枪。
 func (r *Registry) MarkStreamOnly(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	for i := range r.models {
-		if strings.EqualFold(r.models[i].ID, id) {
-			r.models[i].StreamOnly = true
-			return
-		}
+	c, _ := r.caps[strings.ToLower(id)]
+	if c.StreamOnly {
+		r.mu.Unlock()
+		return
+	}
+	c.StreamOnly = true
+	if c.Source == "" {
+		c.Source = "observed"
+	}
+	key, persist := r.setCapabilityLocked(id, c)
+	r.mu.Unlock()
+	if persist != nil {
+		persist(key, c)
+	}
+}
+
+// MarkNonStream 记录某模型的非流式接口可用。
+//
+// 必须能「反向修正」：上游行为会漂移（glm-5.3 曾经只支持流式，
+// 2026-11-20 实测非流式已返回 200）。只会加标记、不会清标记的实现
+// 会让网关永远多绕一层流式聚合。
+func (r *Registry) MarkNonStream(id string) {
+	r.mu.Lock()
+	c, ok := r.caps[strings.ToLower(id)]
+	if !ok || !c.StreamOnly {
+		r.mu.Unlock()
+		return
+	}
+	c.StreamOnly = false
+	if c.Source == "" {
+		c.Source = "observed"
+	}
+	key, persist := r.setCapabilityLocked(id, c)
+	r.mu.Unlock()
+	if persist != nil {
+		persist(key, c)
+	}
+}
+
+// SetCapability 写入一条完整的能力快照（探测用）。
+func (r *Registry) SetCapability(id string, c Capability) {
+	r.mu.Lock()
+	key, persist := r.setCapabilityLocked(id, c)
+	r.mu.Unlock()
+	if persist != nil {
+		persist(key, c)
 	}
 }
 

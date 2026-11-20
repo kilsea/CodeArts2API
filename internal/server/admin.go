@@ -590,8 +590,26 @@ func (s *Server) handleAdminModelProbe(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				err = s.Up.Probe(ctx, sess, modelID)
+				// 非流式拿到「空 body 的 4xx」= 该模型可能只支持流式，必须再探一次流式
+				// 才能下结论。只探非流式会把一个能用的模型标成「不可用」。
+				if err != nil && codearts.IsEmptyRejection(err) {
+					if serr := s.Up.ProbeStream(ctx, sess, modelID); serr == nil {
+						s.Reg.MarkStreamOnly(modelID)
+						row["ok"] = true
+						row["stream_only"] = true
+						row["account"] = a.DisplayName()
+						cancel()
+						break
+					} else {
+						// 两种都不行：真的不可用，保留流式的错误（信息量更大）。
+						err = serr
+					}
+				}
 				cancel()
 				if err == nil {
+					// 非流式能用：顺手清掉可能已过期的「只支持流式」标记
+					// （上游行为会漂移，glm-5.3 就是这么变回来的）。
+					s.Reg.MarkNonStream(modelID)
 					row["ok"] = true
 					row["account"] = a.DisplayName()
 					break

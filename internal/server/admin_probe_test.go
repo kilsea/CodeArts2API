@@ -279,3 +279,57 @@ func TestModelProbeEmptyListUsesRegistry(t *testing.T) {
 		}
 	}
 }
+
+// TestModelProbeDetectsStreamOnly 只支持流式的模型不能被误判成「不可用」。
+//
+// 回归背景：Probe 走非流式，遇到「空 body 的 400」就直接报不可用 ——
+// 而实测 glm-5.3 正是这种形态（README 记录「只支持流式」）。于是一个能用的
+// 模型在控制台上是红叉，用户会去排查账号，方向完全错。
+func TestModelProbeDetectsStreamOnly(t *testing.T) {
+	s := newAdminTestServer(t, "a")
+	s.Up.HTTP = &http.Client{Transport: probeRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if !req.Stream {
+			// 上游对只支持流式的模型回 HTTP 400 + 空 body。
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    r,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(strings.NewReader(
+				"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")),
+			Request: r,
+		}, nil
+	})}
+
+	rec := adminProbeRequest(t, s, http.MethodPost, "/admin/api/models/probe", `{"models":["glm-5.3"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（body: %s）", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Available int              `json:"available"`
+		Results   []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应解析失败: %v", err)
+	}
+	if resp.Available != 1 {
+		t.Fatalf("只支持流式的模型被判成不可用: %s", rec.Body.String())
+	}
+	if got, _ := resp.Results[0]["stream_only"].(bool); !got {
+		t.Errorf("结果里应标记 stream_only=true，实际 %v", resp.Results[0])
+	}
+	// 能力矩阵必须被记住（下次直接走流式，不再多打一次空枪）。
+	if c, ok := s.Reg.Capability("glm-5.3"); !ok || !c.StreamOnly {
+		t.Errorf("能力矩阵没有记录 stream_only: %+v ok=%v", c, ok)
+	}
+}

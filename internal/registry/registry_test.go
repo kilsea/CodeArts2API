@@ -172,3 +172,84 @@ func TestFallbackModelsAreCurrent(t *testing.T) {
 		}
 	}
 }
+
+// --- 能力矩阵 ---
+
+// TestCapabilityPersistedOnMarkStreamOnly 标记必须触发落盘回调，
+// 否则重启后又要多打一次空枪（每次都是一次真实扣积分）。
+func TestCapabilityPersistedOnMarkStreamOnly(t *testing.T) {
+	r := New()
+	r.Replace(FromBuiltin([]codearts.BuiltinModel{{ModelID: "glm-5.3", Enable: true}}))
+
+	saved := map[string]Capability{}
+	r.SetPersist(func(id string, c Capability) { saved[id] = c })
+
+	r.MarkStreamOnly("GLM-5.3") // 大小写无关
+	c, ok := saved["glm-5.3"]
+	if !ok {
+		t.Fatalf("落盘回调没有收到 glm-5.3：%v", saved)
+	}
+	if !c.StreamOnly {
+		t.Error("落盘的能力里 stream_only 应为 true")
+	}
+	if c.Source != "observed" {
+		t.Errorf("source = %q，期望 observed", c.Source)
+	}
+	// 模型上也必须投影出来（/v1/models 与控制台都读它）。
+	m, _ := r.Resolve("glm-5.3", nil)
+	if !m.StreamOnly || m.Capabilities == nil || !m.Capabilities.StreamOnly {
+		t.Errorf("模型没有带上能力快照: %+v", m)
+	}
+}
+
+// TestCapabilitySurvivesReplace 上游刷新模型清单时，能力快照不能被清掉。
+func TestCapabilitySurvivesReplace(t *testing.T) {
+	r := New()
+	r.Replace(FromBuiltin([]codearts.BuiltinModel{{ModelID: "glm-5.3", Enable: true}}))
+	r.MarkStreamOnly("glm-5.3")
+
+	r.Replace(FromBuiltin([]codearts.BuiltinModel{{ModelID: "glm-5.3", Enable: true}}))
+
+	m, ok := r.Resolve("glm-5.3", nil)
+	if !ok || !m.StreamOnly {
+		t.Error("Replace 之后 stream_only 丢失了")
+	}
+}
+
+// TestMarkNonStreamClearsStaleFlag 上游行为会漂移（glm-5.3 曾经只支持流式，
+// 后来又支持了非流式），标记必须能反向清除，否则网关永远多绕一层流式聚合。
+func TestMarkNonStreamClearsStaleFlag(t *testing.T) {
+	r := New()
+	r.Replace(FromBuiltin([]codearts.BuiltinModel{{ModelID: "glm-5.3", Enable: true}}))
+	r.MarkStreamOnly("glm-5.3")
+	r.MarkNonStream("glm-5.3")
+
+	m, _ := r.Resolve("glm-5.3", nil)
+	if m.StreamOnly {
+		t.Error("MarkNonStream 之后仍然是 stream_only")
+	}
+	if c, ok := r.Capability("glm-5.3"); !ok || c.StreamOnly {
+		t.Errorf("能力快照没有更新: %+v ok=%v", c, ok)
+	}
+}
+
+// TestApplyCapabilitiesRestores 启动时从状态文件恢复能力快照。
+func TestApplyCapabilitiesRestores(t *testing.T) {
+	r := New()
+	r.Replace(FromBuiltin([]codearts.BuiltinModel{{ModelID: "glm-5.3", Enable: true}}))
+	r.ApplyCapabilities(map[string]Capability{
+		"glm-5.3": {StreamOnly: true, Tools: true, ProbedAt: 1700000000, Source: "probe"},
+	})
+
+	m, _ := r.Resolve("glm-5.3", nil)
+	if !m.StreamOnly {
+		t.Error("恢复后 stream_only 没生效")
+	}
+	if m.Capabilities == nil || !m.Capabilities.Tools || m.Capabilities.ProbedAt != 1700000000 {
+		t.Errorf("能力快照恢复不完整: %+v", m.Capabilities)
+	}
+	// 恢复不应触发落盘（否则每次启动都写一次状态文件）。
+	if caps := r.Capabilities(); len(caps) != 1 {
+		t.Errorf("能力快照数量 = %d，期望 1", len(caps))
+	}
+}

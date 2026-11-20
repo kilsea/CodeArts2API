@@ -1,11 +1,13 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"codearts2api/internal/codearts"
+	"codearts2api/internal/registry"
 )
 
 func newCooldownStore(t *testing.T) *Store {
@@ -125,5 +127,55 @@ func TestFailureCooldownBacksOff(t *testing.T) {
 	}
 	if failureCooldown(1) != 2*time.Minute {
 		t.Fatalf("首次失败冷却 = %v，期望 2m（保证一次抖动后很快能半开重试）", failureCooldown(1))
+	}
+}
+
+// TestCapabilityRoundTrip 模型能力快照必须能跨进程存活。
+//
+// 回归背景：能力快照（stream_only 等）以前只存在内存里，重启就丢，
+// 于是每次启动都要重新打一次空枪才能发现「这个模型只支持流式」——
+// 而每次探测都是真实扣积分。
+func TestCapabilityRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.SetCapability("GLM-5.3", registry.Capability{
+		StreamOnly: true,
+		Tools:      true,
+		ProbedAt:   1700000000,
+		Source:     "probe",
+	})
+
+	// 重新打开（模拟重启）
+	again, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caps := again.Capabilities()
+	c, ok := caps["glm-5.3"] // key 统一小写
+	if !ok {
+		t.Fatalf("能力快照没有落盘: %v", caps)
+	}
+	if !c.StreamOnly || !c.Tools || c.ProbedAt != 1700000000 || c.Source != "probe" {
+		t.Errorf("能力快照内容不对: %+v", c)
+	}
+}
+
+// TestOldStateFileWithoutCapabilitiesLoads 旧状态文件（没有 capabilities 字段）
+// 必须能直接加载 —— 新增字段是 omitempty，不需要升 schema 版本。
+func TestOldStateFileWithoutCapabilitiesLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	raw := `{"version":2,"accounts":[],"keys":[],"logs":[],"settings":{"default_model":"glm-5.3"}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("旧状态文件加载失败: %v", err)
+	}
+	if len(st.Capabilities()) != 0 {
+		t.Errorf("旧文件的 capabilities 应为空，得到 %v", st.Capabilities())
 	}
 }

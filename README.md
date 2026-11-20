@@ -127,7 +127,9 @@ benefit 通道一并关掉了。实测结果：
 - 请求头不再发送 `maas_type`
 - 内置兜底清单换成当前 8 个积分模型
 - **无法识别的模型名直接返回 `404`**，不再回落到任何模型 —— 现在每个模型都真实扣费，
-  猜错模型等于替用户乱花钱
+  猜错模型等于替用户乱花钱。内置的 `gpt-4o` / `gpt-5` 等**兼容别名默认关闭**
+  （打开后每次命中都会回写 `X-Gateway-Model-Fallback` 响应头，绝不静默），
+  要长期使用请配「模型别名」。见 [COMPAT.md §4](docs/COMPAT.md)
 - 控制台的「活动福利」照旧可用（那是运营活动子系统，与 benefit 通道无关）
 
 > 想恢复免费额度只能等官方重新开放活动。网关不会再静默尝试 benefit 通道，
@@ -224,22 +226,30 @@ curl ... -d '{"model":"glm-5.3","messages":[...],"stream":true}'  # 原生流式
 
 ### 2.4 模型别名
 
-内置别名（可在控制台改成任意映射）：
+在控制台「设置 → 模型别名」里配 `{"我的名字":"上游模型 ID"}`，例如：
 
 ```json
-{"gpt-4o":"glm-5.3","gpt-5":"GLM-5.2",
- "claude-sonnet-4":"GLM-5.2","deepseek-chat":"deepseek-v4.1-flash"}
+{"my-cheap":"glm-5.3","my-strong":"GLM-5.2"}
 ```
-
-完整映射：通用档（`gpt-4o` / `gpt-4` / `glm-4` / `codearts` …）→ `glm-5.3`，
-旗舰档（`gpt-5` / `claude-3-5-sonnet` / `claude-sonnet-4` / `deepseek-reasoner` …）→ `GLM-5.2`，
-`deepseek-chat` → `deepseek-v4.1-flash`。
 
 规则：
 
-- 解析顺序：精确 ID → 自定义别名 → 内置别名 → 大小写无关匹配；**没有模糊匹配**
-- 全部失败 → `404`，错误信息里列出当前可用模型
+- 解析顺序：精确 ID → 自定义别名 → 大小写无关匹配；**没有模糊匹配**
+- 全部失败 → `404` + `code=model_not_found` + `param=model`，错误信息里列出当前可用模型
 - 自定义别名的目标模型不在当前清单里时，该别名既不生效也不出现在 `/v1/models` 里
+
+**内置兼容别名默认关闭。** 网关内部还留着一张旧客户端兼容表
+（`gpt-4o` → `glm-5.3`、`gpt-5` / `claude-sonnet-4` → `GLM-5.2`、
+`deepseek-chat` → `deepseek-v4.1-flash` …），但它会让用户以为换了模型、
+其实只是换了个名字并真实扣积分。只有在控制台显式打开「启用兼容别名」
+（`model_fallback`）后才生效，且：
+
+- 每次命中回写响应头 `X-Gateway-Model-Fallback: <实际模型>`
+  与 `X-Gateway-Model-Requested: <请求模型>`；
+- 记一条 `[model-fallback]` 告警日志；
+- 响应体里的 `model` 始终是**实际执行**的模型。
+
+需要长期使用这些名字，请配自定义别名 —— 那是你显式声明过的映射。
 
 ### 2.5 模型清单接口
 
@@ -515,12 +525,17 @@ Anthropic 侧映射为 `thinking` 内容块。
 
 ### 错误语义
 
+> 完整清单（含规范错误码 `code`、`param`、`X-Request-Id`）见
+> [COMPAT.md §5](docs/COMPAT.md)。下面是按 HTTP 状态码的速查表。
+
 网关不再把所有失败都报成 `502`，而是尽量保留语义，客户端可以据此决定是否退避重试：
 
 | 情况 | HTTP | OpenAI `error.type` | Anthropic `error.type` |
 | --- | --- | --- | --- |
 | **网关侧限流**（本机密钥打太快） | `429` | `rate_limit_error` | `rate_limit_error` |
 | 上游并发会话打满 / 429 限流 | `429` | `rate_limit_error` | `rate_limit_error` |
+| **全部账号并发槽位占满**（排队 20s 仍无位） | `429` + `Retry-After` | `rate_limit_error` | `rate_limit_error` |
+| 请求体 / `messages` 超限 | `413` | `invalid_request_error` | `invalid_request_error` |
 | 请求参数或模型名不合法（含上游 `200 + error_code` 的业务错误） | `400` | `invalid_request_error` | `invalid_request_error` |
 | 模型不存在 | `404` | `invalid_request_error` | `invalid_request_error` |
 | 上游 5xx / 网络错误 | `502` | `upstream_error` | `overloaded_error` |
@@ -543,6 +558,20 @@ Anthropic 侧映射为 `thinking` 内容块。
 > **网关侧限流与上游 429 是两件事**：前者是「这个密钥自己打得太快」，响应会带
 > `Retry-After`（网关能算准补满令牌的时间）；后者是「账号的并发会话满了」，只能等或换账号。
 > 被网关拦下的请求**不会**进入上游，因此不消耗积分。
+>
+> **每账号并发闸门**：上游硬上限是每账号 3 个并发会话。网关侧对每个账号做了
+> 信号量，超限时**排队**（最长 20 秒）而不是把请求打到上游换一个 `TM.00001041`；
+> 排队仍超时才回 `429` + `Retry-After: 5`。
+>
+> **排障用的响应头**：
+>
+> | 头 | 含义 |
+> | --- | --- |
+> | `X-Request-Id` | 每个响应都有；同值写入请求日志的 `request_id`，可凭它检索 / 重放 |
+> | `Retry-After` | 429 时给出建议等待秒数 |
+> | `X-Gateway-Unsupported` | 本次请求里被摘掉的不支持字段（如 `seed,logprobs`） |
+> | `X-Gateway-Model-Fallback` | 命中了兼容别名时，实际执行的模型 |
+> | `X-Gateway-Model-Requested` | 命中了兼容别名时，客户端请求的模型 |
 >
 > **账号登录态失效**是唯一需要人工介入的错误：网关会把上游的错误码
 > （`STS5.1806` / `invalid_grant` / `APIG.0301` …）翻译成一句人话，

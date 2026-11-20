@@ -51,6 +51,25 @@ func (e *ModelNotFound) APICode() string { return CodeModelNotFound }
 // APIParam 实现 Coder。
 func (e *ModelNotFound) APIParam() string { return "model" }
 
+// AccountBusy 表示**全部账号的并发槽位都已占满**，排队超时。
+//
+// 与 RateLimited 的区别：RateLimited 是「你这个密钥打得太快」，
+// AccountBusy 是「所有账号都被占着」—— 后者与客户端频率无关，
+// 换一个密钥也未必能立刻成功，但等一会儿一定会好。
+type AccountBusy struct {
+	// RetryAfter 是建议客户端等待的时长，恒大于 0。
+	RetryAfter time.Duration
+}
+
+// Error 实现 error。
+func (e *AccountBusy) Error() string {
+	secs := int(math.Ceil(e.RetryAfter.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	return fmt.Sprintf("全部账号的并发会话已占满（上游每账号上限 3 个），请在 %d 秒后重试", secs)
+}
+
 // RateLimited 表示**网关侧**的限流拦截。
 //
 // 必须与上游 429 区分开：上游 429 是「账号的并发会话满了，换个时机或换个账号再试」，
@@ -85,6 +104,8 @@ type Error struct {
 	// Upstream 是上游原始错误原文：仅当 Code 映射不出来时才填，
 	// 让客户端至少能看到上游说了什么，而不是一句笼统的 upstream_error。
 	Upstream string
+	// RetryAfter > 0 时由写出方补 Retry-After 响应头。
+	RetryAfter time.Duration
 }
 
 // From 把内部错误映射为对外表述。
@@ -115,7 +136,15 @@ func From(err error) Error {
 	}
 	var rl *RateLimited
 	if errors.As(err, &rl) {
-		return coded(Error{Status: http.StatusTooManyRequests, OpenAI: "rate_limit_error", Anthropic: "rate_limit_error", Code: CodeRateLimited}, err)
+		e := coded(Error{Status: http.StatusTooManyRequests, OpenAI: "rate_limit_error", Anthropic: "rate_limit_error", Code: CodeRateLimited}, err)
+		e.RetryAfter = rl.RetryAfter
+		return e
+	}
+	var busy *AccountBusy
+	if errors.As(err, &busy) {
+		e := coded(Error{Status: http.StatusTooManyRequests, OpenAI: "rate_limit_error", Anthropic: "rate_limit_error", Code: CodeConcurrency}, err)
+		e.RetryAfter = busy.RetryAfter
+		return e
 	}
 	// 请求结构本身不合法（role 不认识 / messages 形状不对）：这是纯粹的客户端问题，
 	// 必须在触达上游之前就报 400，而不是先打一次上游再把它当成上游故障（502）。

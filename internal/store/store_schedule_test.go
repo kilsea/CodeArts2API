@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -169,5 +170,88 @@ func TestSetAccountCredit(t *testing.T) {
 	}
 	if st.SetAccountCredit("missing", &codearts.CreditInfo{}) {
 		t.Error("不存在的账号应返回 false")
+	}
+}
+
+// --- 每账号并发闸门 ---
+
+// TestSlotCapacityAndQueue 槽位容量固定为 perAccountInFlight，超出的请求排队。
+func TestSlotCapacityAndQueue(t *testing.T) {
+	st := newCooldownStore(t)
+
+	ctx := context.Background()
+	for i := 0; i < perAccountInFlight; i++ {
+		if err := st.AcquireSlot(ctx, "a"); err != nil {
+			t.Fatalf("第 %d 个槽位应立刻拿到: %v", i+1, err)
+		}
+	}
+	if got := st.InFlight("a"); got != perAccountInFlight {
+		t.Errorf("在飞数 = %d，期望 %d", got, perAccountInFlight)
+	}
+
+	// 第 4 个必须排队（不能立刻返回成功）。
+	waitCtx, cancel := context.WithTimeout(ctx, 60*time.Millisecond)
+	defer cancel()
+	if err := st.AcquireSlot(waitCtx, "a"); err == nil {
+		t.Fatal("槽位已满时不应立刻成功")
+	}
+
+	// 释放一个后应立刻拿到。
+	st.ReleaseSlot("a")
+	quickCtx, quickCancel := context.WithTimeout(ctx, time.Second)
+	defer quickCancel()
+	if err := st.AcquireSlot(quickCtx, "a"); err != nil {
+		t.Fatalf("释放后应能拿到槽位: %v", err)
+	}
+}
+
+// TestSlotWaitWakesUpOnRelease 排队的请求必须在槽位释放时被唤醒，而不是死等超时。
+func TestSlotWaitWakesUpOnRelease(t *testing.T) {
+	st := newCooldownStore(t)
+	ctx := context.Background()
+	for i := 0; i < perAccountInFlight; i++ {
+		_ = st.AcquireSlot(ctx, "a")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		wctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		done <- st.AcquireSlot(wctx, "a")
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	st.ReleaseSlot("a")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("槽位释放后排队请求应成功: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("槽位释放后排队请求没有被唤醒")
+	}
+}
+
+// TestSlotIsPerAccount 一个账号满了不影响另一个账号。
+func TestSlotIsPerAccount(t *testing.T) {
+	st := newCooldownStore(t)
+	ctx := context.Background()
+	for i := 0; i < perAccountInFlight; i++ {
+		_ = st.AcquireSlot(ctx, "a")
+	}
+	if err := st.AcquireSlot(ctx, "b"); err != nil {
+		t.Errorf("账号 b 应仍可拿到槽位: %v", err)
+	}
+}
+
+// TestAcquireAccountNonBlocking AcquireAccount 是调度用的非阻塞版本：满了也不阻塞。
+func TestAcquireAccountNonBlocking(t *testing.T) {
+	st := newCooldownStore(t)
+	for i := 0; i < perAccountInFlight+2; i++ {
+		st.AcquireAccount("a") // 不能卡住
+	}
+	if got := st.InFlight("a"); got != perAccountInFlight {
+		t.Errorf("在飞数 = %d，期望被封顶在 %d", got, perAccountInFlight)
 	}
 }

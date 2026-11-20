@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -622,5 +623,89 @@ func TestAnthropicResponseHasThinkingSignature(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("响应里没有 thinking 块")
+	}
+}
+
+// --- P1-3 能力矩阵 ---
+
+// TestStreamOnlyModelSkipsNonStreamAttempt 已知「只支持流式」的模型必须直接走流式，
+// 不再每次多打一次空枪（每次都是一次真实扣积分）。
+func TestStreamOnlyModelSkipsNonStreamAttempt(t *testing.T) {
+	s, cap := setupCompatServer(t)
+	s.Reg.SetCapability("glm-5.3", registry.Capability{StreamOnly: true, Source: "probe"})
+
+	// 上游只接受流式：非流式请求会拿到空 body 的 400（真实上游的行为）。
+	s.Up.HTTP = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		cap.mu.Lock()
+		cap.bodies = append(cap.bodies, string(raw))
+		cap.mu.Unlock()
+
+		var body struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		if !body.Stream {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    r,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(sseFixture)),
+			Request:    r,
+		}, nil
+	})}
+
+	rec := postChat(t, s, `{"model":"glm-5.3","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200；body=%s", rec.Code, rec.Body.String())
+	}
+	if n := cap.count(); n != 1 {
+		t.Fatalf("上游被打了 %d 次，期望 1 次（直接走流式，不再试探非流式）", n)
+	}
+	var resp struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v", err)
+	}
+	if resp.Object != "chat.completion" || len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "你好世界" {
+		t.Errorf("聚合结果不对: %+v", resp)
+	}
+}
+
+// TestCapabilityRestoredAtStartup 能力矩阵必须从状态文件恢复（跨进程存活）。
+func TestCapabilityRestoredAtStartup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.SetCapability("glm-5.3", registry.Capability{StreamOnly: true, Source: "probe"})
+
+	// 用同一个状态文件重新构造 Server（模拟重启）。
+	s := New(st)
+	if c, ok := s.Reg.Capability("glm-5.3"); !ok || !c.StreamOnly {
+		t.Fatalf("启动时没有恢复能力快照: %+v ok=%v", c, ok)
+	}
+
+	// 之后的能力变更必须回写状态文件。
+	s.Reg.SetCapability("GLM-5.2", registry.Capability{StreamOnly: true, Source: "probe"})
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.Capabilities()["glm-5.2"]; !ok {
+		t.Error("能力变更没有落盘")
 	}
 }

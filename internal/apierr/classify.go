@@ -60,6 +60,10 @@ func Classify(err error) string {
 	if errors.As(err, &rl) {
 		return "rate_limited"
 	}
+	var busy *AccountBusy
+	if errors.As(err, &busy) {
+		return "rate_limited"
+	}
 	var ue *codearts.UpstreamError
 	if errors.As(err, &ue) {
 		return "upstream"

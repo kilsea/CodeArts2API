@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,10 @@ type Server struct {
 	// 积分额度缓存：额度查询是真实上游请求，切页签 / 连续刷新时没必要每次都打。
 	creditMu    sync.Mutex
 	creditCache map[string]creditCacheEntry
+
+	// dumps 是可选请求采样器（CODEARTS_DUMP_SAMPLE 控制，默认关闭）。
+	// nil 表示关闭 —— 默认行为仍然是「不记录任何对话正文」。
+	dumps *Dumper
 }
 
 // New 构造服务。
@@ -60,6 +65,17 @@ func New(st *store.Store) *Server {
 	s.Cred.Logf = log.Printf
 	s.Logins = codearts.NewLoginManager(up)
 	s.Limits = ratelimit.New(rateLimitConfig(st.Settings()), nil)
+
+	// 模型能力矩阵：启动时从状态文件恢复（跨进程的事实），
+	// 之后每次变更（请求路径观测到 / 测活探测到）都回写落盘。
+	// 注意先 Apply 再 SetPersist：恢复过程不应该反过来触发一次落盘。
+	s.Reg.ApplyCapabilities(st.Capabilities())
+	s.Reg.SetPersist(func(id string, c registry.Capability) {
+		st.SetCapability(id, c)
+	})
+
+	// 请求采样：默认关闭。开启时采样文件放在状态文件同目录下的 samples/。
+	s.dumps = NewDumper(filepath.Dir(st.Path()))
 	return s
 }
 
@@ -98,6 +114,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/api/login/poll", s.withAdminAuth(s.handleAdminLoginPoll))
 	mux.HandleFunc("/admin/api/login/callback", s.withAdminAuth(s.handleAdminLoginCallback))
 	mux.HandleFunc("/admin/api/login/cancel", s.withAdminAuth(s.handleAdminLoginCancel))
+	// 失败请求重放（按 X-Request-Id 取采样，见 dump.go / replay.go）。
+	mux.HandleFunc(replayPrefix, s.withAdminAuth(s.handleAdminReplay))
 
 	// 运行指标（Prometheus 文本格式，与管理接口同一套鉴权）
 	mux.HandleFunc("/metrics", s.withAdminAuth(s.handleMetrics))

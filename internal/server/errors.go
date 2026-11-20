@@ -2,6 +2,8 @@ package server
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"codearts2api/internal/apierr"
 )
@@ -25,6 +27,7 @@ import (
 
 // writeOpenAIErr 写出 OpenAI 规范错误体。
 func writeOpenAIErr(w http.ResponseWriter, status int, e apierr.Error, msg string) {
+	writeRetryAfter(w, e.RetryAfter)
 	body := map[string]any{
 		"message": msg,
 		"type":    e.OpenAI,
@@ -43,6 +46,7 @@ func writeOpenAIErr(w http.ResponseWriter, status int, e apierr.Error, msg strin
 
 // writeAnthropicAPIErr 写出 Anthropic 规范错误体。
 func writeAnthropicAPIErr(w http.ResponseWriter, e apierr.Error, msg string) {
+	writeRetryAfter(w, e.RetryAfter)
 	body := map[string]any{"type": e.Anthropic, "message": msg}
 	if e.Code != "" {
 		body["code"] = e.Code
@@ -60,6 +64,20 @@ func writeAnthropicAPIErr(w http.ResponseWriter, e apierr.Error, msg string) {
 // 这类错误没有内部 error 值，直接给出状态码与规范码。
 func writeRequestErr(w http.ResponseWriter, status int, msg, typ, code, param string) {
 	writeOpenAIErr(w, status, apierr.Error{OpenAI: typ, Code: code, Param: param}, msg)
+}
+
+// writeRetryAfter 在错误可重试时补上 Retry-After 头。
+//
+// 必须与状态码一起给出：只给 429 不给等待时长，客户端只能自己猜退避，
+// 通常就是立刻重试，把并发槽位又撞满。
+func writeRetryAfter(w http.ResponseWriter, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	if w.Header().Get("Retry-After") != "" {
+		return
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(d)))
 }
 
 // requestIDHeader 是贯穿网关与日志的关联标识。

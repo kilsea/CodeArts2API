@@ -2,9 +2,11 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"codearts2api/internal/codearts"
+	"codearts2api/internal/registry"
 )
 
 // APIKey 是网关对外签发的调用密钥。
@@ -145,6 +148,14 @@ type State struct {
 	Settings Settings            `json:"settings"`
 	Stats    Stats               `json:"stats"`
 	Logs     []LogEntry          `json:"logs"`
+	// Capabilities 是实测到的模型能力快照（key 为小写模型 ID）。
+	//
+	// 落盘的原因：上游行为会漂移（glm-5.3 曾只支持流式，后来又支持非流式），
+	// 而「探测一次」要真实扣积分。重启后能接着用上次的结论，
+	// 不必每次启动都重新探测一轮。
+	//
+	// 新增字段带 omitempty，旧状态文件能直接加载（无需升版本）。
+	Capabilities map[string]registry.Capability `json:"capabilities,omitempty"`
 }
 
 // Store 是带锁的状态容器。
@@ -164,9 +175,15 @@ type Store struct {
 	// rotateCredit 是「到期积分池」独立的轮询下标，与普通池的 rotate 互不干扰
 	// （到期池非空时普通池可以被饿着 —— 这正是该策略的目的）。
 	rotateCredit int
-	// inFlight 是各账号当前在飞的请求数，由请求路径 Acquire/Release 维护。
-	// 只用于调度决策，不持久化 —— 进程重启后归零，重新累计。
-	inFlight map[string]int
+	// slots 是每账号的并发闸门：容量 perAccountInFlight 的带缓冲 channel。
+	//
+	// 它同时承担两个职责：
+	//   1. 调度决策 —— NextAccount 跳过 len(ch) == cap 的账号；
+	//   2. 并发闸门 —— 请求路径在这里排队，而不是把超限请求打到上游
+	//      （上游回 TM.00001041，白白消耗一次重试机会）。
+	//
+	// 不持久化：进程重启后归零，重新累计。
+	slots map[string]chan struct{}
 }
 
 // DefaultSettings 返回默认设置。
@@ -657,7 +674,7 @@ func (s *Store) NextAccount() *codearts.Account {
 		if healthy == nil {
 			healthy, healthyIdx = a, idx
 		}
-		if free == nil && s.inFlight[a.ID] < perAccountInFlight {
+		if free == nil && s.inFlightLocked(a.ID) < perAccountInFlight {
 			free, freeIdx = a, idx
 		}
 	}
@@ -690,7 +707,7 @@ func (s *Store) nextExpiringAccount() *codearts.Account {
 			now.Sub(time.Unix(a.CreditRefreshedAt, 0)) > creditFreshTTL {
 			continue
 		}
-		if s.inFlight[a.ID] >= perAccountInFlight {
+		if s.inFlightLocked(a.ID) >= perAccountInFlight {
 			continue
 		}
 		pool = append(pool, a)
@@ -707,29 +724,91 @@ func (s *Store) nextExpiringAccount() *codearts.Account {
 	return cloneAccount(a)
 }
 
-// AcquireAccount 标记账号上的一次调用开始（在飞计数 +1）。
-//
-// 只有请求路径（withAccountRetry）需要计数 —— 它是并发流量的来源；
-// 控制台的一次性查询短暂借用会话，不计入。
-func (s *Store) AcquireAccount(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.inFlight == nil {
-		s.inFlight = map[string]int{}
+// slotLocked 返回账号的并发闸门（惰性创建）。必须在持有 s.mu 时调用。
+func (s *Store) slotLocked(id string) chan struct{} {
+	if s.slots == nil {
+		s.slots = map[string]chan struct{}{}
 	}
-	s.inFlight[id]++
+	ch, ok := s.slots[id]
+	if !ok {
+		ch = make(chan struct{}, perAccountInFlight)
+		s.slots[id] = ch
+	}
+	return ch
 }
 
-// ReleaseAccount 标记账号上的一次调用结束。
-func (s *Store) ReleaseAccount(id string) {
+// inFlightLocked 返回账号当前在飞请求数。必须在持有 s.mu 时调用。
+func (s *Store) inFlightLocked(id string) int {
+	ch, ok := s.slots[id]
+	if !ok {
+		return 0
+	}
+	return len(ch)
+}
+
+// InFlight 返回账号当前在飞请求数（供控制台 / 测试观察）。
+func (s *Store) InFlight(id string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.inFlightLocked(id)
+}
+
+// AcquireSlot 等待账号的一个并发槽位。
+//
+// 这是「每账号 3 个并发会话」这条上游硬约束在网关侧的落地：槽位满时**排队**，
+// 而不是把请求打到上游换一个 TM.00001041（那是一次白白的重试消耗）。
+//
+// ctx 到期返回 ctx.Err()：调用方据此区分「排队超时」与「客户端断开」，
+// 前者应回 429 + Retry-After，后者什么都不该回。
+func (s *Store) AcquireSlot(ctx context.Context, id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if n := s.inFlight[id]; n <= 1 {
-		delete(s.inFlight, id)
-	} else {
-		s.inFlight[id] = n - 1
+	ch := s.slotLocked(id)
+	s.mu.Unlock()
+
+	// 先非阻塞试一次：绝大多数请求都能立刻拿到槽位，不必进 select。
+	select {
+	case ch <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case ch <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
+
+// ReleaseSlot 释放账号的一个并发槽位。
+func (s *Store) ReleaseSlot(id string) {
+	s.mu.Lock()
+	ch, ok := s.slots[id]
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case <-ch:
+	default:
+	}
+}
+
+// AcquireAccount 非阻塞地占用一个槽位（占不到就说明已满）。
+//
+// 保留它是为了调度测试与「只想标记一下」的场景；请求路径请用 AcquireSlot，
+// 它会在满时排队而不是静默地不计入。
+func (s *Store) AcquireAccount(id string) {
+	s.mu.Lock()
+	ch := s.slotLocked(id)
+	s.mu.Unlock()
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// ReleaseAccount 释放一个槽位（与 AcquireAccount 配对）。
+func (s *Store) ReleaseAccount(id string) { s.ReleaseSlot(id) }
 
 // SetAccountEnabled 启用 / 停用账号（在锁内修改，避免与控制台读取竞争）。
 func (s *Store) SetAccountEnabled(id string, enabled bool) bool {
@@ -978,6 +1057,33 @@ func (s *Store) HasKeys() bool {
 }
 
 // --- 设置 / 统计 / 日志 ---
+
+// Capabilities 返回模型能力快照的副本。
+func (s *Store) Capabilities() map[string]registry.Capability {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]registry.Capability, len(s.st.Capabilities))
+	for k, v := range s.st.Capabilities {
+		out[k] = v
+	}
+	return out
+}
+
+// SetCapability 写入一条模型能力快照并落盘。
+//
+// 落盘失败只记日志（调用方是请求路径，不能因为磁盘满而让请求失败）——
+// 内存里的能力仍然生效，下次成功落盘时会补上。
+func (s *Store) SetCapability(id string, c registry.Capability) {
+	s.mu.Lock()
+	if s.st.Capabilities == nil {
+		s.st.Capabilities = map[string]registry.Capability{}
+	}
+	s.st.Capabilities[strings.ToLower(id)] = c
+	s.mu.Unlock()
+	if err := s.Save(); err != nil {
+		log.Printf("保存模型能力快照失败: %v", err)
+	}
+}
 
 // Settings 返回设置快照。
 func (s *Store) Settings() Settings {
