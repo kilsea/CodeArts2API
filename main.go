@@ -37,18 +37,20 @@ var (
 
 func main() {
 	var (
-		host       = flag.String("host", envOr("CODEARTS_HOST", "127.0.0.1"), "监听地址")
-		port       = flag.Int("port", envInt("CODEARTS_PORT", 10087), "监听端口")
-		dataPath   = flag.String("data", envOr("CODEARTS_DATA_PATH", ""), "状态文件路径（默认在可执行文件同目录）")
-		userData   = flag.String("user-data", envOr("CODEARTS_USER_DATA", ""), "CodeArts Agent 的 User Data 目录（留空自动探测）")
-		modelsSync = flag.Duration("models-sync", envDur("CODEARTS_MODELS_SYNC", 6*time.Hour), "定时同步上游模型清单的间隔（如 6h / 30m，0 关闭周期性同步）")
-		importOnly = flag.Bool("import", false, "仅执行一次桌面端凭据导入后退出")
-		exportPath = flag.String("export-session", "", "把本机登录态导出为 session JSON（路径，或用 - 输出到 stdout）后退出")
-		noImport   = flag.Bool("no-import", false, "启动时不自动导入桌面端登录态")
-		noRefresh  = flag.Bool("no-refresh", false, "禁止网关自行续期（只读 IDE 会话）")
-		adminPw    = flag.String("admin-password", envOr("CODEARTS_ADMIN_PASSWORD", ""), "管理密码（非空时覆盖状态文件中的设置）")
-		anon       = flag.Bool("allow-anonymous", envBool("CODEARTS_ALLOW_ANONYMOUS"), "未签发密钥时允许非本机来源匿名调用 /v1/*（默认仅本机直连）")
-		showVer    = flag.Bool("version", false, "打印版本后退出")
+		host         = flag.String("host", envOr("CODEARTS_HOST", "127.0.0.1"), "监听地址")
+		port         = flag.Int("port", envInt("CODEARTS_PORT", 10087), "监听端口")
+		dataPath     = flag.String("data", envOr("CODEARTS_DATA_PATH", ""), "状态文件路径（默认在可执行文件同目录）")
+		userData     = flag.String("user-data", envOr("CODEARTS_USER_DATA", ""), "CodeArts Agent 的 User Data 目录（留空自动探测）")
+		modelsSync   = flag.Duration("models-sync", envDur("CODEARTS_MODELS_SYNC", 6*time.Hour), "定时同步上游模型清单的间隔（如 6h / 30m，0 关闭周期性同步）")
+		importOnly   = flag.Bool("import", false, "仅执行一次桌面端凭据导入后退出")
+		exportPath   = flag.String("export-session", "", "把本机登录态导出为 session JSON（路径，或用 - 输出到 stdout）后退出")
+		noImport     = flag.Bool("no-import", false, "启动时不自动导入桌面端登录态")
+		noRefresh    = flag.Bool("no-refresh", false, "禁止网关自行续期（只读 IDE 会话）")
+		creditEvery  = flag.Duration("credit-refresh", envDur("CODEARTS_CREDIT_REFRESH", 10*time.Minute), "后台积分快照刷新周期（如 30m / 2h，0 关闭；余额页靠它采样）")
+		creditLookup = flag.Bool("credit-lookup", envBoolDefault("CODEARTS_CREDIT_LOOKUP", true), "每笔请求反查上游账单拿真实扣费（关闭后按本地价格表估算）")
+		adminPw      = flag.String("admin-password", envOr("CODEARTS_ADMIN_PASSWORD", ""), "管理密码（非空时覆盖状态文件中的设置）")
+		anon         = flag.Bool("allow-anonymous", envBool("CODEARTS_ALLOW_ANONYMOUS"), "未签发密钥时允许非本机来源匿名调用 /v1/*（默认仅本机直连）")
+		showVer      = flag.Bool("version", false, "打印版本后退出")
 	)
 	flag.Parse()
 
@@ -119,6 +121,8 @@ func main() {
 	}
 
 	srv := server.New(st)
+	srv.SetCreditRefresh(*creditEvery)
+	srv.SetCreditLookup(*creditLookup)
 	srv.ApplyIdentity()
 	server.SetBuildInfo(version, commit, buildTime)
 
@@ -330,6 +334,14 @@ func envDur(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// envBoolDefault 读取布尔环境变量，未设置时返回 def。
+func envBoolDefault(key string, def bool) bool {
+	if _, ok := os.LookupEnv(key); !ok {
+		return def
+	}
+	return envBool(key)
 }
 
 // envBool 读取布尔环境变量（1/true/yes/on 视为真）。

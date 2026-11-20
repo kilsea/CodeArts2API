@@ -84,6 +84,8 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 		"models_loaded_at": modelsLoadedAt,
 		// 定时同步间隔（秒），0 = 关闭；控制台据此显示「每 N 小时自动同步」。
 		"models_sync_seconds": s.modelSyncEvery.Load(),
+		// 进程运行时长（秒）：侧栏「已运行 …」用它，重启即归零。
+		"uptime_seconds": int64(time.Since(s.startedAt).Seconds()),
 	})
 }
 
@@ -357,18 +359,28 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	f := store.LogFilter{
-		Status: strings.TrimSpace(q.Get("status")),
-		Class:  strings.TrimSpace(q.Get("class")),
-		Model:  strings.TrimSpace(q.Get("model")),
-		Q:      strings.TrimSpace(q.Get("q")),
-		Since:  int64(intQuery(r, "since")),
+		Status:     strings.TrimSpace(q.Get("status")),
+		Class:      strings.TrimSpace(q.Get("class")),
+		Model:      strings.TrimSpace(q.Get("model")),
+		Account:    strings.TrimSpace(q.Get("account")),
+		Q:          strings.TrimSpace(q.Get("q")),
+		Since:      int64(intQuery(r, "since")),
+		MinCredits: floatQuery(r, "min_credits"),
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"logs": newestFirst(s.Store.QueryLogs(f, intQuery(r, "limit"))),
 	})
 }
 
-// handleAdminUsage 返回按「天 + 模型」聚合的用量（默认最近 7 天）。
+// handleAdminUsage 返回按「天 + 账号 + 模型」聚合的用量（默认最近 7 天）。
+//
+// 一次把所有视图算好返回：控制台要「总账 / 按天 / 按模型 / 按账号」四个切面，
+// 前端自己 reduce 四遍既容易写错口径，又让「积分到底怎么算的」散落在 JS 里。
+// 这里的合计全部来自同一份 rows，口径只有一处。
+//
+// 另附 actual：账号级真实消耗（上游积分快照差值，见 store.CreditSpendRow）。
+// 它跟 rows 的积分合计不必相等 —— 快照覆盖整个账号（含 IDE 自己的请求），
+// 也受刷新周期影响；两者并排显示才能看出「网关估算/账单」是否贴着账号账单。
 func (s *Server) handleAdminUsage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
@@ -378,10 +390,79 @@ func (s *Server) handleAdminUsage(w http.ResponseWriter, r *http.Request) {
 	if days <= 0 {
 		days = 7
 	}
+	// 逐小时桶只为时序图服务：默认最近 48 小时，最长 72（保留窗口）。
+	hours := intQuery(r, "hours")
+	if hours <= 0 {
+		hours = 48
+	}
+	if hours > store.UsageHourlyKeepHours {
+		hours = store.UsageHourlyKeepHours
+	}
+
+	rows := s.Store.Usage(days)
+	// 可与日志页同样按账号 / 模型收窄：脚本里「只看某个账号这周花了多少模型钱」
+	// 不该先拉全量再自己筛。
+	accountFilter := strings.TrimSpace(r.URL.Query().Get("account"))
+	if accountFilter != "" {
+		rows = filterUsage(rows, func(r store.UsageRow) bool {
+			return r.AccountID == accountFilter || r.Account == accountFilter
+		})
+	}
+	if want := strings.TrimSpace(r.URL.Query().Get("model")); want != "" {
+		rows = filterUsage(rows, func(r store.UsageRow) bool { return r.Model == want })
+	}
+	hourly := s.Store.UsageHourly(hours)
+	if accountFilter != "" {
+		hourly = filterUsage(hourly, func(r store.UsageRow) bool {
+			return r.AccountID == accountFilter || r.Account == accountFilter
+		})
+	}
+	if want := strings.TrimSpace(r.URL.Query().Get("model")); want != "" {
+		hourly = filterUsage(hourly, func(r store.UsageRow) bool { return r.Model == want })
+	}
+
+	actual := s.Store.CreditSpend(days)
+	if accountFilter != "" {
+		kept := actual[:0]
+		for _, r := range actual {
+			if r.AccountID == accountFilter || r.Account == accountFilter {
+				kept = append(kept, r)
+			}
+		}
+		actual = kept
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"days": days,
-		"rows": s.Store.Usage(days),
+		"days":         days,
+		"rows":         rows,
+		"total":        store.SumUsage(rows),
+		"hours":        hours,
+		"by_hour":      store.UsageByHour(hourly),
+		"by_day":       store.UsageByDay(rows),
+		"by_model":     store.UsageByModel(rows),
+		"by_account":   store.UsageByAccount(rows),
+		"actual":       actual,
+		"actual_total": sumCreditSpend(actual),
 	})
+}
+
+// filterUsage 按条件收窄用量行。
+func filterUsage(rows []store.UsageRow, keep func(store.UsageRow) bool) []store.UsageRow {
+	out := make([]store.UsageRow, 0, len(rows))
+	for _, r := range rows {
+		if keep(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// sumCreditSpend 把账号级真实消耗求和。
+func sumCreditSpend(rows []store.CreditSpendRow) float64 {
+	var total float64
+	for _, r := range rows {
+		total += r.Credits
+	}
+	return total
 }
 
 // newestFirst 把日志翻成「最新的在前」。

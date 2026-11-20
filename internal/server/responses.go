@@ -144,12 +144,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		timeout = 300 * time.Second
 	}
 	promptLen := protocol.EstimatePromptLen(upBody)
+	msgID := newMsgID()
 
 	if req.Stream {
-		s.streamResponses(w, r, upBody, &req, model, key, timeout, start, promptLen)
+		s.streamResponses(w, r, upBody, &req, model, key, timeout, start, promptLen, msgID)
 		return
 	}
-	s.blockingResponses(w, r, upBody, &req, model, key, timeout, start, promptLen)
+	s.blockingResponses(w, r, upBody, &req, model, key, timeout, start, promptLen, msgID)
 }
 
 // responsesParamErr 把转换层的 ParamError 翻译成规范错误。
@@ -166,10 +167,10 @@ func responsesParamErr(err error) error {
 }
 
 // blockingResponses 收集完整回复后按 response 对象返回。
-func (s *Server) blockingResponses(w http.ResponseWriter, r *http.Request, body []byte, req *protocol.ResponsesRequest, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int) {
+func (s *Server) blockingResponses(w http.ResponseWriter, r *http.Request, body []byte, req *protocol.ResponsesRequest, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int, msgID string) {
 	var raw []byte
 	acct, tried, err := s.withAccountRetry(r.Context(), timeout, func(ctx context.Context, acct *codearts.Account) error {
-		res, err := s.chatOnce(ctx, acct, model, body)
+		res, err := s.chatOnce(ctx, acct, model, body, msgID)
 		if err != nil {
 			return err
 		}
@@ -183,15 +184,19 @@ func (s *Server) blockingResponses(w http.ResponseWriter, r *http.Request, body 
 		return
 	}
 
+	u, _ := usageFromJSON(raw)
 	out := protocol.FromChatCompletion(raw, req, model.ID, promptLen)
 	outLen := len([]rune(out.Text)) + len([]rune(out.Thinking))
 	s.saveResponse(req, out.Payload, body, out.ChatMessage)
-	s.record(requestID(r.Context()), key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil)
 	writeJSON(w, http.StatusOK, out.Payload)
+	// 响应已经写完，再查上游账单（不拖慢客户端）。
+	elapsed := time.Since(start)
+	s.record(requestID(r.Context()), key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil,
+		withElapsed(elapsed), withCredit(s.settleCredits(r.Context(), acct, model, msgID, u)))
 }
 
 // streamResponses 把上游 SSE 转换为 Responses API 事件流。
-func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, body []byte, req *protocol.ResponsesRequest, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int) {
+func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, body []byte, req *protocol.ResponsesRequest, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int, msgID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeRequestErr(w, http.StatusInternalServerError, "服务端不支持流式响应",
@@ -234,7 +239,7 @@ func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, body []
 	}
 
 	acct, tried, err := s.withAccountRetry(r.Context(), timeout, func(ctx context.Context, acct *codearts.Account) error {
-		return s.streamOnce(ctx, acct, model, body, func(chunk []byte) error {
+		return s.streamOnce(ctx, acct, model, body, msgID, func(chunk []byte) error {
 			evs, ferr := st.Feed(chunk)
 			if ferr != nil {
 				return ferr
@@ -266,7 +271,8 @@ func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, body []
 		s.saveResponse(req, st.Response(), body, st.ChatMessage())
 	}
 	s.record(requestID(r.Context()), key, acct, model.ID, true,
-		apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr)
+		apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr,
+		withElapsed(time.Since(start)), withCredit(s.settleCredits(r.Context(), acct, model, msgID, streamUsage(st))))
 }
 
 // saveResponse 把一次成功的响应存进内存（store=false 时跳过）。

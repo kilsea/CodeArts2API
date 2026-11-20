@@ -24,6 +24,7 @@
 | benefit 模型清单 | `GET /api/v1/gateway/config` | `https://opengw.developer.huaweicloud.com` | ❌ 已下线（`4000: invalid channel, group not found`） |
 | 每日额度 | `GET /api/v1/user/tokens/balance` | 同上 | ❌ 已下线（同上） |
 | 积分套餐与用量 | `GET /snap-manager/v1/statistics/plugin` | `https://snap-access.cn-north-4.myhuaweicloud.com` | 🔶 代码确认（Agent 26.9.902）；路径实测存在（未带凭据返回 `401`） |
+| 逐请求积分账单 | `GET /v1/ops/credit/usage?type=msg\|session&id=…` | 同上 | ✅ 实测（Agent 26.11.200；`type=msg` 返回 `creditCost`，见 [CREDITS.md](CREDITS.md)） |
 | benefit 通道开关 | `GET /v1/benefit-gateway-config` | `https://snap-access.cn-north-4.myhuaweicloud.com` | ✅ 返回 `{"enabled":false}` |
 | 每日免费 Token 领取 | `GET /api/v1/benefit/claim`（幂等） | `https://opengw.developer.huaweicloud.com` | ❌ 已下线（同上） |
 | 可用模型清单 | `GET /v1/model/builtin`（需 `Agent-Type: PromptCenter`） | `https://snap-access.cn-north-4.myhuaweicloud.com` | ✅ |
@@ -137,6 +138,19 @@ Authorization: SDK-HMAC-SHA256 ...        # 与其它 snap-access 接口同一�
 
 没有 `usageTotalPackageCredit` 时表示当前账号不是积分套餐（token 套餐 / 白名单 / 未开通），
 控制台显示「无积分套餐」而不是 0。
+
+### 3.2 逐请求积分账单（`/v1/ops/credit/usage`）
+
+```text
+GET ${chatDomain}/v1/ops/credit/usage?type=msg&id=<user-msg-id>
+GET ${chatDomain}/v1/ops/credit/usage?type=session&id=<x-ot-session-id>
+headers: x-snap-traceid / x-auth-token / Agent-Type: PromptCenter
+```
+
+`data` 返回 `promptTokenUsed` / `completionTokenUsed` / `cachedTokenUsed` /
+`totalTokenUsed` / `cacheHitRatio` / `creditCost`（两位小数）。
+网关用自己发的 `user-msg-id` 反查每次请求的准确扣费；查不到时按价格档位估算。
+详见 [CREDITS.md](CREDITS.md)。
 
 ---
 

@@ -181,7 +181,7 @@ func TestChatOnceFallsBackToStreamAggregation(t *testing.T) {
 
 	acct := s.Store.Account("a")
 	model := registry.Model{ID: "glm-5.3"}
-	raw, err := s.chatOnce(t.Context(), acct, model, []byte(`{"model":"glm-5.3","stream":false,"messages":[]}`))
+	raw, err := s.chatOnce(t.Context(), acct, model, []byte(`{"model":"glm-5.3","stream":false,"messages":[]}`), "msg_test")
 	if err != nil {
 		t.Fatalf("聚合兜底失败: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestChatOnceFallsBackToStreamAggregation(t *testing.T) {
 	if !model.StreamOnly {
 		t.Fatal("模型没有被标记为 StreamOnly，下次仍会先发一次必然失败的非流式请求")
 	}
-	if _, err := s.chatOnce(t.Context(), acct, model, []byte(`{"model":"glm-5.3","stream":false,"messages":[]}`)); err != nil {
+	if _, err := s.chatOnce(t.Context(), acct, model, []byte(`{"model":"glm-5.3","stream":false,"messages":[]}`), "msg_test"); err != nil {
 		t.Fatalf("第二次调用失败: %v", err)
 	}
 	mu.Lock()

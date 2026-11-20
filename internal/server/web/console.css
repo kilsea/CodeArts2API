@@ -438,13 +438,19 @@ section.on{
 
 /* ===== KPI ============================================================== */
 
+/* KPI 的列数由 JS 写进 --cols（见 console.js 的 layoutKpis）：
+   纯 CSS 的 auto-fit 无法同时做到「每格不太宽」和「每行都铺满」，
+   固定列数又会让 6 个卡片排成 4 + 2、右边留两个空洞。
+   flex-basis 精确等于「一行 N 格的宽度」，最后一行不足 N 格时由 grow 拉满。 */
 .kpis{
-  display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
-  gap:12px;
+  display:flex;
+  flex-wrap:wrap;
+  gap:var(--kpi-gap,12px);
   margin-bottom:16px;
 }
 .kpi{
+  flex:1 1 calc((100% - (var(--cols,4) - 1) * var(--kpi-gap,12px) - 1px) / var(--cols,4));
+  min-width:0;
   display:flex;
   flex-direction:column;
   gap:6px;
@@ -1010,6 +1016,7 @@ code{
 .mb-12{margin-bottom:12px}
 .mb-0{margin-bottom:0}
 .w-70{width:70px}
+.w-120{width:120px}
 .w-hour{width:72px}
 .w-180{width:180px}
 .w-190{width:190px}
@@ -1103,10 +1110,11 @@ code{
   .card-head{gap:10px}
   .card-actions{margin-left:0;width:100%}
   .field-grid{grid-template-columns:1fr}
-  .kpis{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}  .kpi{padding:12px 13px}
+  .kpis{--kpi-gap:10px}
+  .kpi{padding:12px 13px}
   .kpi .v{font-size:22px}
   .quota-num{font-size:26px}
-  .w-180,.w-190,.w-200,.w-250,.w-280,.w-520{width:100%}
+  .w-120,.w-180,.w-190,.w-200,.w-250,.w-280,.w-520{width:100%}
   .grow-320{min-width:0}
 }
 
@@ -1114,8 +1122,13 @@ code{
   .page-head h1{font-size:17px}
   .btn{height:30px;padding:0 10px;font-size:12.5px}
   .btn.xs{height:25px;padding:0 8px}
-  .kpis{grid-template-columns:1fr 1fr}
+  .kpi .v{font-size:20px}
   .toast{right:12px;bottom:12px;max-width:calc(100vw - 24px)}
+}
+
+@media (max-width:760px){
+  .usage-yaxis.side-credit{display:none}
+  .usage-axis{margin-left:52px}
 }
 
 @media (prefers-reduced-motion:reduce){
@@ -1129,21 +1142,47 @@ code{
 
 /* ===== 用量趋势（纯 CSS 柱状图，不引图表库） ===================== */
 
-.usage-chart{
+/* 柱区与时间轴分开：柱子按底对齐，标签固定在轴上一行，
+   不会因为「有的柱子有数值、有的是空柱」把基线顶得七零八落。 */
+.usage-figure{display:flex;gap:8px;align-items:flex-start}
+.usage-yaxis{
+  flex:none;
+  width:44px;
+  height:130px;
+  position:relative;
+  padding-top:8px;
+}
+.usage-yaxis span{
+  position:absolute;
+  right:4px;
+  transform:translateY(50%);
+  font-size:10px;
+  color:var(--text-3);
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+/* 三条序列三种单位，各给一条轴：左内 积分（虚线色）、左 请求（柱色）、右 token（线色） */
+.usage-yaxis.side-credit{width:42px}
+.usage-yaxis.side-credit span{color:var(--warn)}
+.usage-yaxis.side-right{width:54px}
+.usage-yaxis.side-right span{right:auto;left:4px;color:var(--ok)}
+.usage-plot{
+  position:relative;
+  flex:1;
   display:flex;
   align-items:flex-end;
   gap:8px;
-  min-height:120px;
+  height:130px;
   padding:8px 0 0;
 }
 .usage-bar{
   flex:1;
   min-width:0;
+  height:100%;
   display:flex;
   flex-direction:column;
   justify-content:flex-end;
   align-items:center;
-  gap:6px;
 }
 .usage-bar .bar{
   width:100%;
@@ -1152,11 +1191,94 @@ code{
   min-height:2px;
   transition:height .25s ease;
 }
-.usage-bar .val{font-size:11px;color:var(--text-2);font-variant-numeric:tabular-nums}
-.usage-bar .lbl{font-size:11px;color:var(--text-3);white-space:nowrap}
+.usage-bar .val{
+  font-size:11px;
+  color:var(--text-2);
+  font-variant-numeric:tabular-nums;
+  margin-bottom:3px;
+  line-height:1;
+}
 .usage-bar.zero .bar{background:var(--line)}
+/* 折线层：绝对定位铺在柱子上面，viewBox 固定 100×88，
+   preserveAspectRatio=none 让横坐标随宽度缩放；线宽用 non-scaling-stroke 保持像素。 */
+.usage-lines{
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:0;
+  width:100%;
+  height:88px;
+  pointer-events:none;
+  overflow:visible;
+}
+.usage-lines polyline{
+  fill:none;
+  stroke-width:1.8;
+  vector-effect:non-scaling-stroke;
+}
+.usage-lines .tok{stroke:var(--ok)}
+.usage-lines .cred{stroke:var(--warn);stroke-dasharray:4 3}
+.usage-lines .tok-area{fill:rgba(61,220,151,.10);stroke:none}
+
+/* 图例：柱子是方块，折线是短横线/虚线段，和图形本身对应 */
+.usage-legend{display:inline-flex;gap:12px;align-items:center;font-size:11px;color:var(--text-3)}
+.usage-legend .lg{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.usage-legend .lg::before{content:"";width:14px;height:8px;border-radius:2px;background:var(--text-3)}
+.usage-legend .lg.req::before{background:linear-gradient(180deg,var(--accent),rgba(77,124,255,.35))}
+.usage-legend .lg.tok::before{height:2px;border-radius:1px;background:var(--ok)}
+.usage-legend .lg.cred::before{height:2px;border-radius:1px;
+  background:repeating-linear-gradient(90deg,var(--warn) 0 4px,transparent 4px 7px)}
+
+/* 横向网格线：只画不占位（absolute 不进 flex 布局），高度与最高柱一致 */
+.usage-grid{
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:0;
+  height:88px;
+  pointer-events:none;
+}
+.usage-grid i{
+  position:absolute;
+  left:0;
+  right:0;
+  border-top:1px dashed var(--line);
+  opacity:.8;
+}
+.usage-axis{
+  display:flex;
+  gap:8px;
+  padding-top:6px;
+  /* 左内积分轴 42 + 间距 8 + 请求轴 44 + 间距 8 */
+  margin-left:102px;
+}
+.usage-axis span{
+  flex:1;
+  min-width:0;
+  text-align:center;
+  font-size:11px;
+  color:var(--text-3);
+  white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+
+/* 小时柱子多：24 小时以上收紧间距、藏掉数值（悬停看 tooltip），48 以上更紧。
+   两个容器必须同步收紧，否则标签和柱子会错位。 */
+.usage-plot.dense,.usage-axis.dense{gap:3px}
+.usage-plot.dense .val{display:none}
+.usage-plot.ultra,.usage-axis.ultra{gap:1px}
+.usage-plot.ultra .val{display:none}
+.usage-axis.ultra span{font-size:9px}
 
 /* 侧栏底部的构建信息：升级后一眼确认跑的是哪个版本 */
+.uptime{
+  display:block;
+  margin-top:2px;
+  font-size:11px;
+  color:var(--text-3);
+  font-variant-numeric:tabular-nums;
+}
+
 .build{
   display:block;
   margin-top:6px;
@@ -1285,3 +1407,195 @@ pre.code{
   height:26px;
 }
 .endpoint-bar .btn.icon-btn.xs .ico{width:14px;height:14px}
+
+/* ===== 余额趋势（积分水位） ============================================
+   纯 SVG 折线 + DOM 柱子，不引图表库（CSP 禁止外部资源，也省一个依赖）。
+   颜色一律走 CSS 变量；账号色按序号 c0..c7 分配，图例 / 曲线 / 表格行首
+   共用同一个类名，保证三处颜色永远一致。 */
+
+.bal-c0{--bal:#4d7cff}
+.bal-c1{--bal:#a8862a}
+.bal-c2{--bal:#2f9e6b}
+.bal-c3{--bal:#0f9aa8}
+.bal-c4{--bal:#8b5cf6}
+.bal-c5{--bal:#d97706}
+.bal-c6{--bal:#db5a8a}
+.bal-c7{--bal:#64748b}
+
+/* 顶部总账：五格，竖线分隔（与卡片头部留一点呼吸） */
+.bal-summary{
+  display:flex;
+  flex-wrap:wrap;
+  margin:14px 0 0;
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+  background:var(--surface-2);
+  overflow:hidden;
+}
+.bal-summary .cell{
+  flex:1 1 132px;
+  min-width:0;
+  padding:11px 16px 12px;
+  border-left:1px solid var(--line);
+}
+.bal-summary .cell:first-child{border-left:0}
+.bal-summary .k{font-size:12px;color:var(--text-2);margin-bottom:2px}
+.bal-summary .v{
+  font-size:23px;
+  font-weight:650;
+  letter-spacing:-.01em;
+  line-height:1.15;
+  font-variant-numeric:tabular-nums;
+}
+.bal-summary .v small{font-size:13px;font-weight:500;color:var(--text-3);letter-spacing:0}
+.bal-summary .v.up{color:var(--ok)}
+.bal-summary .v.down{color:var(--err)}
+
+/* 图例 */
+.bal-legend{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:6px 16px;
+  margin:12px 0 2px;
+  font-size:12px;
+  color:var(--text-2);
+}
+.bal-legend.small{font-size:11.5px;color:var(--text-3);margin-top:10px}
+.bal-legend .item{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.bal-legend .sw{width:10px;height:10px;border-radius:2px;flex:none;background:var(--bal,var(--text-3))}
+.bal-legend .sw.gain{background:var(--ok)}
+.bal-legend .sw.loss{background:var(--err)}
+.bal-legend .sw.partial{background:var(--ok);opacity:.4}
+
+/* 折线图：左轴 + 绘图区。高度固定 300px，与 JS 里的 viewBox 高度对应。 */
+.bal-figure{display:flex;gap:10px;margin-top:14px;position:relative}
+.bal-yaxis{
+  flex:none;
+  width:64px;
+  height:300px;
+  position:relative;
+}
+.bal-yaxis span{
+  position:absolute;
+  right:6px;
+  transform:translateY(50%);
+  font-size:11px;
+  color:var(--text-3);
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+.bal-plot{position:relative;flex:1;min-width:0;height:300px}
+.bal-plot .grid{position:absolute;inset:0;pointer-events:none}
+.bal-plot .grid i{
+  position:absolute;
+  left:0;
+  right:0;
+  border-top:1px dashed var(--line);
+  opacity:.7;
+}
+.bal-plot svg{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  overflow:visible;
+}
+/* preserveAspectRatio=none 会把线宽一起拉伸，用 non-scaling-stroke 固定像素。 */
+.bal-plot path.line{
+  fill:none;
+  stroke:var(--bal,var(--accent));
+  stroke-width:1.9;
+  stroke-linejoin:round;
+  stroke-linecap:round;
+  vector-effect:non-scaling-stroke;
+}
+.bal-plot path.line.dim{opacity:.45}
+.bal-zero-note{
+  position:absolute;
+  left:0;
+  bottom:-24px;
+  font-size:10.5px;
+  color:var(--text-3);
+  white-space:nowrap;
+}
+.bal-xaxis{
+  display:flex;
+  justify-content:space-between;
+  gap:8px;
+  padding:10px 0 0 74px;
+  font-size:11px;
+  color:var(--text-3);
+  font-variant-numeric:tabular-nums;
+}
+.bal-xaxis span{white-space:nowrap}
+
+/* 每日变化：零线居中，正柱向上、负柱向下；同一天内按账号顺序并排。 */
+/* 每日变化：左侧 Y 轴 + 柱子区，零线按正负占比浮动（全正时贴底）。 */
+.bal-daily-figure{display:flex;gap:10px;margin-top:16px}
+.bal-daily-figure .bal-yaxis{height:210px;flex:none}
+.bal-daily{
+  display:flex;
+  align-items:stretch;
+  gap:4px;
+  height:210px;
+  flex:1;
+  min-width:0;
+}
+.bal-day{flex:1 1 0;min-width:0;max-width:120px;display:flex;flex-direction:column}
+.bal-day .pos{flex:none;display:flex;align-items:flex-end;gap:2px;min-height:0;border-bottom:1px solid var(--line-2)}
+.bal-day .neg{flex:none;display:flex;align-items:flex-start;gap:2px;min-height:0}
+.bal-day .bar{flex:1 1 0;min-width:1px;border-radius:1px 1px 0 0;background:var(--ok)}
+.bal-day .bar.loss{background:var(--err);border-radius:0 0 1px 1px}
+.bal-day .bar.partial{opacity:.45}
+.bal-day .bar.flat{background:var(--text-3);opacity:.4;border-radius:1px}
+.bal-daily-axis{
+  display:flex;
+  gap:4px;
+  padding:6px 0 0 74px;
+  font-size:11px;
+  color:var(--text-3);
+  font-variant-numeric:tabular-nums;
+}
+.bal-daily-axis span{flex:1 1 0;min-width:0;max-width:120px;text-align:center;white-space:nowrap}
+
+/* 表格：行首色条与图例同色；数字列等宽对齐 */
+.bal-table td{font-variant-numeric:tabular-nums}
+.bal-table .bal-name{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.bal-table .bal-name i{
+  width:3px;
+  height:16px;
+  border-radius:2px;
+  flex:none;
+  background:var(--bal,var(--line-2));
+}
+.bal-table .bal-name span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bal-table td.num{text-align:right}
+.bal-table .up{color:var(--ok)}
+.bal-table .down{color:var(--err)}
+.bal-table tr.total td{font-weight:600;border-top:1px solid var(--line-2)}
+
+@media (max-width:760px){
+  .bal-yaxis{width:48px}
+  .bal-xaxis{padding-left:58px}
+  .bal-summary .cell{flex-basis:50%;border-left:0;border-top:1px solid var(--line)}
+  .bal-summary .cell:nth-child(-n+2){border-top:0}
+  .bal-daily{height:160px}
+  .bal-day .pos,.bal-day .neg{gap:1px}
+}
+
+.bal-empty{
+  padding:78px 12px;
+  text-align:center;
+  color:var(--text-3);
+  font-size:13px;
+  border:1px dashed var(--line);
+  border-radius:var(--r-md);
+}
+.bal-table td .sub{font-size:11px;color:var(--text-3);font-weight:400;letter-spacing:0}
+.bal-table th:not(:first-child){text-align:right}
+/* 每日变化为空时：容器退回自动高度，居中提示占满一行 */
+.bal-daily.bal-daily-empty{height:auto;display:block}
+.bal-daily.bal-daily-empty .bal-empty{margin:0;padding:44px 12px}
+/* 稀疏点位：点数少时在折线上补圆点（像素坐标，圆不会被 viewBox 拉扁） */
+.bal-plot .bal-dot{fill:var(--bal,var(--accent));stroke:var(--surface);stroke-width:1.5}

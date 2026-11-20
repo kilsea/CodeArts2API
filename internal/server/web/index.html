@@ -27,6 +27,14 @@
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></svg>
         <span>概览</span>
       </button>
+      <button role="tab" id="nav-usage" data-tab="usage" aria-selected="false" aria-controls="tab-usage">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V9"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg>
+        <span>用量</span>
+      </button>
+      <button role="tab" id="nav-balance" data-tab="balance" aria-selected="false" aria-controls="tab-balance">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 16.5 9 10.8l3.6 3.6L20.5 6"/><path d="M20.5 6h-4.2"/><path d="M20.5 6v4.2"/><path d="M3.5 20.5h17"/></svg>
+        <span>余额</span>
+      </button>
       <button role="tab" id="nav-accounts" data-tab="accounts" aria-selected="false" aria-controls="tab-accounts">
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c0-3.2 2.5-5.6 5.5-5.6s5.5 2.4 5.5 5.6"/><path d="M16 5.4a3.2 3.2 0 0 1 0 6.2"/><path d="M17.5 14.6c2 .6 3.5 2.5 3.5 4.9"/></svg>
         <span>账号</span>
@@ -52,6 +60,7 @@
     <div class="sidebar-foot">
       <span id="health" class="badge"><i class="dot"></i><span>检测中…</span></span>
       <span class="build" id="build" title="当前运行的构建"></span>
+      <span class="uptime" id="uptime" title="服务已运行时长（本次进程启动至今）"></span>
     </div>
   </aside>
 
@@ -94,29 +103,6 @@
     <main id="main">
       <section id="tab-overview" class="on" role="tabpanel" aria-labelledby="nav-overview">
         <div class="kpis" id="kpis"></div>
-
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <h2>用量趋势</h2>
-              <p class="card-sub">按天聚合（只存聚合值，不存单条请求）；重启不丢</p>
-            </div>
-            <div class="card-actions">
-              <select id="usageDays" class="w-auto" aria-label="统计天数">
-                <option value="7">最近 7 天</option>
-                <option value="14">最近 14 天</option>
-                <option value="30">最近 30 天</option>
-              </select>
-            </div>
-          </div>
-          <div class="usage-chart" id="usageChart" aria-label="每日请求数"></div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>模型</th><th>请求</th><th>入（字符）</th><th>出（字符）</th></tr></thead>
-              <tbody id="usageModels"></tbody>
-            </table>
-          </div>
-        </div>
 
         <div class="card">
           <div class="card-head">
@@ -182,6 +168,161 @@
             无法识别的模型名会直接报 404（不会静默回落到其他模型）。
             「测活」对单个模型发一次最小真实请求（max_tokens=8），只有真打一次才知道
             上游是不是真的给你用。
+          </p>
+        </div>
+      </section>
+
+      <section id="tab-usage" role="tabpanel" aria-labelledby="nav-usage">
+        <div class="kpis" id="usageKpis"></div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>每小时用量</h2>
+              <p class="card-sub">请求数（柱，左轴）· token（实线，右轴）· 积分（虚线，左内轴）；逐小时聚合，只存聚合值</p>
+            </div>
+            <div class="card-actions">
+              <span class="usage-legend" aria-hidden="true">
+                <span class="lg req">请求</span>
+                <span class="lg tok">token</span>
+                <span class="lg cred">积分</span>
+              </span>
+              <select id="hourHours" class="w-auto" aria-label="时序窗口">
+                <option value="today" selected>今天</option>
+                <option value="24">最近 24 小时</option>
+                <option value="48">最近 48 小时</option>
+                <option value="72">最近 72 小时</option>
+              </select>
+            </div>
+          </div>
+          <div class="usage-figure">
+            <div class="usage-yaxis side-credit" id="hourYCredit" aria-hidden="true"></div>
+            <div class="usage-yaxis" id="hourYAxis" aria-hidden="true"></div>
+            <div class="usage-plot" id="hourChart" aria-label="每小时用量"></div>
+            <div class="usage-yaxis side-right" id="hourYTokens" aria-hidden="true"></div>
+          </div>
+          <div class="usage-axis" id="hourAxis"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>按模型</h2>
+              <p class="card-sub">请求 / token / 缓存命中 / 积分 / 平均延迟；积分优先取上游账单，查不到才本地估算</p>
+            </div>
+            <div class="card-actions">
+              <select id="usageDays" class="w-auto" aria-label="统计天数">
+                <option value="1" selected>今天</option>
+                <option value="7">最近 7 天</option>
+                <option value="14">最近 14 天</option>
+                <option value="30">最近 30 天</option>
+              </select>
+              <span class="hint m-0" id="usageCreditSummary"></span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>模型</th><th>请求</th><th>输入 token</th><th>输出 token</th><th>缓存命中</th><th>积分</th><th>平均延迟</th><th>吐字速度</th></tr></thead>
+              <tbody id="usageModels"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>按账号</h2>
+              <p class="card-sub">积分是账号的额度，所以每一笔都跟着账号记；下表是网关账单，下面的「上游实测」是账号积分快照差值（含 IDE 自己用掉的积分）</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>账号</th><th>请求</th><th>输入 token</th><th>输出 token</th><th>缓存命中</th><th>积分</th><th>平均延迟</th><th>吐字速度</th></tr></thead>
+              <tbody id="usageAccounts"></tbody>
+            </table>
+          </div>
+          <div class="table-wrap mt-12">
+            <table>
+              <thead><tr><th>日期</th><th>账号</th><th>上游实测积分</th></tr></thead>
+              <tbody id="usageActual"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>每日用量与积分</h2>
+              <p class="card-sub">按天汇总：请求、token、缓存命中、积分、平均延迟，并与账号积分快照差值对照</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>日期</th><th>请求</th><th>输入 token</th><th>输出 token</th><th>缓存命中</th><th>积分</th><th>平均延迟</th><th>吐字速度</th><th>上游实测</th><th>差额</th></tr></thead>
+              <tbody id="usageDaily"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-balance" role="tabpanel" aria-labelledby="nav-balance">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>余额趋势</h2>
+              <p class="card-sub">积分水位：每 30 分钟一个采样点，来自账号积分快照（后台每 10 分钟刷新一次）</p>
+            </div>
+            <div class="card-actions">
+              <span class="hint m-0" id="balUpdated"></span>
+              <select id="balDays" class="w-auto" aria-label="余额窗口">
+                <option value="7">近 7 天</option>
+                <option value="14">近 14 天</option>
+                <option value="30" selected>近 30 天</option>
+              </select>
+              <button class="btn" id="balRefresh">刷新</button>
+            </div>
+          </div>
+          <div class="bal-summary" id="balSummary"></div>
+          <div class="bal-legend" id="balLegend"></div>
+          <div class="bal-figure">
+            <div class="bal-yaxis" id="balYAxis" aria-hidden="true"></div>
+            <div class="bal-plot" id="balPlot" aria-label="余额趋势"></div>
+            <span class="bal-zero-note">轴不从 0 起</span>
+          </div>
+          <div class="bal-xaxis" id="balXAxis"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>每日变化</h2>
+              <p class="card-sub">每账号每天一根：绿 = 当日净增，红 = 当日净减；浅色 = 当日采样不完整</p>
+            </div>
+          </div>
+          <div class="bal-daily-figure">
+            <div class="bal-yaxis" id="balDailyYAxis" aria-hidden="true"></div>
+            <div class="bal-daily" id="balDaily"></div>
+          </div>
+          <div class="bal-daily-axis" id="balDailyAxis"></div>
+          <div class="bal-legend small" id="balDailyLegend"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>按账号</h2>
+              <p class="card-sub">净变化 = 窗口末值 − 窗口首值；消耗 / 到账来自相邻采样的正负差（额度重置会计入到账）</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="bal-table">
+              <thead><tr><th>账号</th><th>当前</th><th>最低</th><th>最高</th><th>净变化</th><th>今日</th><th>昨日</th><th>消耗*</th><th>到账*</th><th>采样点</th></tr></thead>
+              <tbody id="balAccounts"></tbody>
+            </table>
+          </div>
+          <p class="hint">
+            消耗 / 到账每格两行：上一行是今日，下一行是窗口合计。采样点少于预期日期时曲线会稀疏，
+            那通常意味着网关那段时间没在跑。
           </p>
         </div>
       </section>
@@ -410,7 +551,8 @@
                 <option value="client_abort">中断</option>
                 <option value="internal">内部</option>
               </select>
-              <input id="logQ" class="w-200" placeholder="request_id / 错误 / 账号" aria-label="日志关键字">
+              <input id="logQ" class="w-200" placeholder="request_id / 错误 / 账号 / 模型" aria-label="日志关键字">
+              <input id="logMinCredits" class="w-120" type="number" min="0" step="0.01" placeholder="积分 ≥" aria-label="只看积分消耗不低于该值的请求">
               <select id="logLimit" class="w-auto" aria-label="日志条数">
                 <option value="50">最近 50</option>
                 <option value="200">最近 200</option>
@@ -422,7 +564,7 @@
           </div>
           <div class="table-wrap scroll-y">
             <table>
-              <thead><tr><th>时间</th><th>模型</th><th>流式</th><th>状态</th><th>分类</th><th>耗时</th><th>入/出</th><th>账号</th><th>密钥</th><th>错误</th></tr></thead>
+              <thead><tr><th>时间</th><th>模型</th><th>积分</th><th>流式</th><th>状态</th><th>分类</th><th>耗时</th><th>入/出</th><th>账号</th><th>密钥</th><th>错误</th></tr></thead>
               <tbody id="logs"></tbody>
             </table>
           </div>

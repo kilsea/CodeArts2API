@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"codearts2api/internal/codearts"
 )
 
 // 日志落盘与查询的回归。
@@ -193,4 +195,174 @@ func stringContains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestUsageKeyedByAccount 用量桶必须带账号维度：同一个模型在不同账号上
+// 是两行，各自的积分独立累计（积分是账号的额度）。
+func TestUsageKeyedByAccount(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().Unix()
+	s.Record(LogEntry{Time: now, AccountID: "a", Account: "acct-a", Model: "glm-5.3",
+		Status: 200, PromptLen: 10, InTokens: 100, OutTokens: 20, Credits: 0.5, CreditSource: "upstream"}, 5)
+	s.Record(LogEntry{Time: now, AccountID: "b", Account: "acct-b", Model: "glm-5.3",
+		Status: 200, PromptLen: 10, InTokens: 300, OutTokens: 40, Credits: 1.5, CreditSource: "upstream"}, 5)
+
+	rows := s.Usage(7)
+	if len(rows) != 2 {
+		t.Fatalf("按账号分桶后应有两行，得到 %d: %+v", len(rows), rows)
+	}
+	byAcct := map[string]UsageRow{}
+	for _, r := range rows {
+		byAcct[r.AccountID] = r
+	}
+	if got := byAcct["a"]; got.Credits != 0.5 || got.InTokens != 100 || got.Requests != 1 {
+		t.Errorf("账号 a 聚合不对: %+v", got)
+	}
+	if got := byAcct["b"]; got.Credits != 1.5 || got.OutTokens != 40 {
+		t.Errorf("账号 b 聚合不对: %+v", got)
+	}
+
+	total := SumUsage(rows)
+	if total.Requests != 2 || total.Credits != 2 || total.InTokens != 400 {
+		t.Errorf("总计不对: %+v", total)
+	}
+	if s.Stats().TotalCredits != 2 {
+		t.Errorf("Stats.TotalCredits = %v，期望 2", s.Stats().TotalCredits)
+	}
+
+	// 按模型 / 按账号归并都要能回到同一份总计（口径只有一处）。
+	if m := UsageByModel(rows); len(m) != 1 || m[0].Credits != 2 {
+		t.Errorf("按模型归并不对: %+v", m)
+	}
+	if a := UsageByAccount(rows); len(a) != 2 {
+		t.Errorf("按账号归并不对: %+v", a)
+	}
+}
+
+// TestCreditSpendLedger 账号积分快照差值：只累计增量，额度重置（Used 变小）
+// 不能被记成负数或倒扣。
+// 小时桶是时序图的数据源：同一小时累加、跨小时分开、超过保留窗口裁掉。
+func TestUsageHourlyBucket(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().Truncate(time.Hour)
+	s.Record(LogEntry{Time: now.Add(5 * time.Minute).Unix(), AccountID: "a", Account: "acct-a",
+		Model: "glm-5.3", Status: 200, InTokens: 100, OutTokens: 20, CachedTokens: 40,
+		Credits: 1.5, LatencyMS: 800}, 20)
+	s.Record(LogEntry{Time: now.Add(20 * time.Minute).Unix(), AccountID: "a", Account: "acct-a",
+		Model: "glm-5.3", Status: 500, Err: "boom", LatencyMS: 200}, 0)
+
+	rows := s.UsageHourly(48)
+	if len(rows) != 1 {
+		t.Fatalf("同一小时应合成 1 行，得到 %d: %+v", len(rows), rows)
+	}
+	r := rows[0]
+	if r.Requests != 2 || r.InTokens != 100 || r.OutTokens != 20 || r.CachedTokens != 40 {
+		t.Errorf("小时后聚合不对: %+v", r)
+	}
+	if r.Credits != 1.5 || r.LatencyMS != 1000 || r.Failures != 1 {
+		t.Errorf("积分/延迟/失败数不对: %+v", r)
+	}
+	// 吐字速度的分母只算「有输出的请求」，平均延迟的分母只算「有耗时记录的请求」。
+	if r.TimedRequests != 2 || r.TimedOutTokens != 20 || r.OutLatencyMS != 800 {
+		t.Errorf("吐字/延迟分母不对: %+v", r)
+	}
+
+	// 跨小时必须分开，否则时序图会变成「一天一根柱」。
+	s.Record(LogEntry{Time: now.Add(time.Hour).Unix(), Model: "glm-5.3", Status: 200, LatencyMS: 100}, 1)
+	if got := len(s.UsageHourly(48)); got != 2 {
+		t.Errorf("跨小时应分成 2 行，得到 %d", got)
+	}
+
+	// 超过 72 小时的桶要么没进来、要么被裁掉（取决于插入顺序）。
+	s.Record(LogEntry{Time: now.Add(-80 * time.Hour).Unix(), Model: "old", Status: 200}, 1)
+	for _, r := range s.UsageHourly(72) {
+		if r.Model == "old" {
+			t.Error("超过保留窗口的小时桶应被裁掉")
+		}
+	}
+}
+
+func TestCreditSpendLedger(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	s.UpsertAccount(&codearts.Account{ID: "a", Name: "acct-a", Enabled: true})
+
+	// 第一次快照只建立基线。
+	s.SetAccountCredit("a", &codearts.CreditInfo{Available: true, Total: 100, Used: 10, Remaining: 90, ResetDate: "2026-12-21"})
+	if rows := s.CreditSpend(2); len(rows) != 0 {
+		t.Fatalf("首次快照不应产生消耗，得到 %+v", rows)
+	}
+
+	// 第二次 +1.5 → 记 1.5。
+	s.SetAccountCredit("a", &codearts.CreditInfo{Available: true, Total: 100, Used: 11.5, Remaining: 88.5, ResetDate: "2026-12-21"})
+	rows := s.CreditSpend(2)
+	if len(rows) != 1 || rows[0].Credits != 1.5 || rows[0].AccountID != "a" {
+		t.Fatalf("差值记账不对: %+v", rows)
+	}
+
+	// 同一天再 +0.5 → 合并进同一行。
+	s.SetAccountCredit("a", &codearts.CreditInfo{Available: true, Total: 100, Used: 12, Remaining: 88, ResetDate: "2026-12-21"})
+	rows = s.CreditSpend(2)
+	if len(rows) != 1 || rows[0].Credits != 2 {
+		t.Fatalf("同日合并不对: %+v", rows)
+	}
+
+	// 额度重置：Used 归零 → 不产生（负）消耗。
+	s.SetAccountCredit("a", &codearts.CreditInfo{Available: true, Total: 100, Used: 0.2, Remaining: 99.8, ResetDate: "2027-01-21"})
+	rows = s.CreditSpend(2)
+	if len(rows) != 1 || rows[0].Credits != 2 {
+		t.Fatalf("重置后不应倒扣: %+v", rows)
+	}
+
+	// 重置后重新累计：从 0.2 涨到 0.9 → +0.7。
+	s.SetAccountCredit("a", &codearts.CreditInfo{Available: true, Total: 100, Used: 0.9, Remaining: 99.1, ResetDate: "2027-01-21"})
+	rows = s.CreditSpend(2)
+	if len(rows) != 1 || rows[0].Credits != 2.7 {
+		t.Fatalf("重置后增量不对: %+v", rows)
+	}
+
+	// 重置到恰好 0（不是 0.2）：之后第一次增长 0 → 0.5 必须被记上。
+	// 拿「CreditUsed > 0」当基线判据的实现会把这 0.5 永久丢掉。
+	s.SetAccountCredit("a", &codearts.CreditInfo{Available: true, Total: 100, Used: 0, Remaining: 100, ResetDate: "2027-02-21"})
+	s.SetAccountCredit("a", &codearts.CreditInfo{Available: true, Total: 100, Used: 0.5, Remaining: 99.5, ResetDate: "2027-02-21"})
+	rows = s.CreditSpend(2)
+	if len(rows) != 1 || rows[0].Credits != 3.2 {
+		t.Fatalf("从 0 起算的增量丢了: %+v", rows)
+	}
+}
+
+// TestLogFilterAccountAndCredits 新增的两个筛选维度：账号与最低积分。
+func TestLogFilterAccountAndCredits(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().Unix()
+	s.Record(LogEntry{Time: now, RequestID: "cheap", Account: "acct-a", Model: "m", Status: 200, Credits: 0.01}, 0)
+	s.Record(LogEntry{Time: now + 1, RequestID: "pricey", Account: "acct-a", Model: "m", Status: 200, Credits: 2.5}, 0)
+	s.Record(LogEntry{Time: now + 2, RequestID: "other", Account: "acct-b", Model: "m", Status: 200, Credits: 1}, 0)
+
+	if got := s.QueryLogs(LogFilter{Account: "acct-a"}, 0); len(got) != 2 {
+		t.Errorf("按账号筛选得到 %d 条，期望 2", len(got))
+	}
+	got := s.QueryLogs(LogFilter{MinCredits: 1}, 0)
+	if len(got) != 2 || got[0].RequestID != "pricey" || got[1].RequestID != "other" {
+		t.Errorf("按最低积分筛选不对: %+v", got)
+	}
 }

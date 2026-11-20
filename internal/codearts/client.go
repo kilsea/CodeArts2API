@@ -73,6 +73,38 @@ type Client struct {
 	TokenURL string
 }
 
+// CallOption 是单次对话的可选参数。
+type CallOption func(*callOptions)
+
+// callOptions 是 CallOption 的聚合结果。
+type callOptions struct {
+	// msgID 覆盖上游 `user-msg-id` 头（空 = 每次随机）。
+	//
+	// 上游用它把一次推理的 token / 积分记在同一个 key 下，之后可以
+	// `GET /v1/ops/credit/usage?type=msg&id=<msgID>` 反查真实扣费。
+	// 网关靠这条链路拿到**逐请求的账单口径积分**（见 FetchCreditUsage）。
+	msgID string
+}
+
+// WithMsgID 让本次请求使用指定的上游消息 ID。
+//
+// ID 必须唯一：复用同一个 ID 会让上游把两次推理的用量合并，反查时
+// 只能拿到合计值。
+func WithMsgID(id string) CallOption {
+	return func(o *callOptions) { o.msgID = id }
+}
+
+// newCallOptions 合并可选参数。
+func newCallOptions(opts []CallOption) callOptions {
+	var o callOptions
+	for _, fn := range opts {
+		if fn != nil {
+			fn(&o)
+		}
+	}
+	return o
+}
+
 // tokenURL 返回实际使用的令牌端点。
 func (c *Client) tokenURL() string {
 	if c != nil && c.TokenURL != "" {
@@ -131,13 +163,16 @@ func NewClient() *Client {
 //
 // sess 用于推导**稳定的**上游会话 ID：上游按 x-ot-session-id 统计并发会话
 // （每账号上限 3 个），每个请求都换新 ID 会迅速打满上限。
-func (c *Client) baseHeaders(sess *Session, model string) map[string]string {
+func (c *Client) baseHeaders(sess *Session, model, msgID string) map[string]string {
 	id := c.Identity
 	if id.PluginName == "" {
 		id = DefaultIdentity()
 	}
 	traceID := RandomHex(16)
 	spanID := RandomHex(8)
+	if msgID == "" {
+		msgID = "msg_" + RandomHex(12)
+	}
 	// 同一个凭据复用同一个会话 ID（凭据轮换后会自然换新）
 	sid := sess.UpstreamSessionID()
 	if sid == "" {
@@ -157,7 +192,7 @@ func (c *Client) baseHeaders(sess *Session, model string) map[string]string {
 		"ide-name":               id.IDEName,
 		"ide-version":            id.IDEVersion,
 		"created-time":           time.Now().UTC().Format("2006-01-02T15:04:05Z"),
-		"user-msg-id":            "msg_" + RandomHex(12),
+		"user-msg-id":            msgID,
 		"x-ot-session-id":        sid,
 		"x-ot-parent-session-id": "",
 		"user-session-id":        sid,
@@ -263,7 +298,7 @@ func (m BuiltinModel) IsBillable() bool { return len(m.Credit) > 0 }
 
 // FetchBuiltinModels 拉取内置模型清单（需要 Agent-Type: PromptCenter）。
 func (c *Client) FetchBuiltinModels(ctx context.Context, sess *Session) ([]BuiltinModel, error) {
-	h := c.baseHeaders(sess, "")
+	h := c.baseHeaders(sess, "", "")
 	h["Agent-Type"] = "PromptCenter"
 	resp, err := c.do(ctx, sess, http.MethodGet, SnapHost, BuiltinModelsPath, nil, h)
 	if err != nil {
@@ -291,8 +326,9 @@ func (c *Client) FetchBuiltinModels(ctx context.Context, sess *Session) ([]Built
 //
 // 上游返回标准 OpenAI SSE（data: {chat.completion.chunk}），
 // 因此这里只做「拆包 + 错误识别」，不做任何协议转换。
-func (c *Client) ChatStream(ctx context.Context, sess *Session, model string, body []byte, onChunk func([]byte) error) error {
-	h := c.baseHeaders(sess, model)
+func (c *Client) ChatStream(ctx context.Context, sess *Session, model string, body []byte, onChunk func([]byte) error, opts ...CallOption) error {
+	co := newCallOptions(opts)
+	h := c.baseHeaders(sess, model, co.msgID)
 	resp, err := c.do(ctx, sess, http.MethodPost, SnapHost, ChatPath, body, h)
 	if err != nil {
 		return err
@@ -329,8 +365,9 @@ func (c *Client) ChatStream(ctx context.Context, sess *Session, model string, bo
 }
 
 // Chat 向 inferhub 发起非流式对话，返回原始响应体。
-func (c *Client) Chat(ctx context.Context, sess *Session, model string, body []byte) ([]byte, error) {
-	h := c.baseHeaders(sess, model)
+func (c *Client) Chat(ctx context.Context, sess *Session, model string, body []byte, opts ...CallOption) ([]byte, error) {
+	co := newCallOptions(opts)
+	h := c.baseHeaders(sess, model, co.msgID)
 	resp, err := c.do(ctx, sess, http.MethodPost, SnapHost, ChatPath, body, h)
 	if err != nil {
 		return nil, err

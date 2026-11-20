@@ -107,22 +107,23 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		timeout = 300 * time.Second
 	}
 	promptLen := protocol.EstimatePromptLen(upBody)
+	msgID := newMsgID()
 
 	if req.Stream {
-		s.streamAnthropic(w, r, upBody, model, key, timeout, start, promptLen)
+		s.streamAnthropic(w, r, upBody, model, key, timeout, start, promptLen, msgID)
 		return
 	}
-	s.blockingAnthropic(w, r, upBody, model, key, timeout, start, promptLen)
+	s.blockingAnthropic(w, r, upBody, model, key, timeout, start, promptLen, msgID)
 }
 
 // blockingAnthropic 收集完整回复后按 Anthropic message 结构返回。
-func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int) {
+func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int, msgID string) {
 	var (
 		raw    []byte
 		outLen int
 	)
 	acct, tried, err := s.withAccountRetry(r.Context(), timeout, func(ctx context.Context, acct *codearts.Account) error {
-		res, err := s.chatOnce(ctx, acct, model, body)
+		res, err := s.chatOnce(ctx, acct, model, body, msgID)
 		if err != nil {
 			return err
 		}
@@ -136,30 +137,34 @@ func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, body 
 		return
 	}
 
+	u, _ := usageFromJSON(raw)
 	out := protocol.FromOpenAI(raw, model.ID)
 	outLen = len([]rune(out.Text)) + len([]rune(out.Thinking))
-	s.record(requestID(r.Context()), key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil)
 	writeJSON(w, http.StatusOK, out.Payload)
+	elapsed := time.Since(start)
+	s.record(requestID(r.Context()), key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil,
+		withElapsed(elapsed), withCredit(s.settleCredits(r.Context(), acct, model, msgID, u)))
 }
 
 // streamAnthropic 把上游 OpenAI SSE 转换为 Anthropic SSE 事件流。
-func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int) {
+func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int, msgID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeAnthropicErr(w, http.StatusInternalServerError, "api_error", "服务端不支持流式响应")
 		return
 	}
 
-	msgID := "msg_" + codearts.RandomHex(12)
+	clientMsgID := "msg_" + codearts.RandomHex(12)
 	var (
 		started   bool
 		outLen    int
 		streamErr error
+		st        *anthropicStream
 	)
 
 	acct, tried, err := s.withAccountRetry(r.Context(), timeout, func(ctx context.Context, acct *codearts.Account) error {
-		st := newAnthropicStream(w, flusher, msgID, model.ID, promptLen)
-		err := s.streamOnce(ctx, acct, model, body, func(chunk []byte) error {
+		st = newAnthropicStream(w, flusher, clientMsgID, model.ID, promptLen)
+		err := s.streamOnce(ctx, acct, model, body, msgID, func(chunk []byte) error {
 			if !started {
 				h := w.Header()
 				h.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -201,7 +206,8 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, body []
 		}
 		writeSSE(w, flusher, "error", map[string]any{"type": "error", "error": body})
 	}
-	s.record(requestID(r.Context()), key, acct, model.ID, true, apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr)
+	s.record(requestID(r.Context()), key, acct, model.ID, true, apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr,
+		withElapsed(time.Since(start)), withCredit(s.settleCredits(r.Context(), acct, model, msgID, st.tokenUsage())))
 }
 
 // --- OpenAI SSE → Anthropic SSE ---
@@ -213,6 +219,12 @@ type anthropicStream struct {
 	msgID   string
 	model   string
 	inTok   int
+	// usageIn/usageOut/usageCached 是上游 usage 回报的真实 token（billing 口径）；
+	// sawUsage=false 表示整条流都没收到 usage。
+	usageIn     int
+	usageOut    int
+	usageCached int
+	sawUsage    bool
 
 	index    int
 	kind     string // "" / "thinking" / "text" / "tool_use"
@@ -305,9 +317,22 @@ func (a *anthropicStream) consume(chunk []byte) (int, error) {
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage *struct {
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(chunk, &c); err != nil {
 		return 0, nil
+	}
+	if c.Usage != nil {
+		a.usageIn = c.Usage.PromptTokens
+		a.usageOut = c.Usage.CompletionTokens
+		a.usageCached = c.Usage.PromptTokensDetails.CachedTokens
+		a.sawUsage = true
 	}
 	n := 0
 	for _, ch := range c.Choices {
@@ -350,6 +375,14 @@ func (a *anthropicStream) consume(chunk []byte) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// tokenUsage 返回上游 usage 的 token 数（供网关记积分用）。
+func (a *anthropicStream) tokenUsage() tokenUsage {
+	if a == nil || !a.sawUsage {
+		return tokenUsage{}
+	}
+	return tokenUsage{In: a.usageIn, Cached: a.usageCached, Out: a.usageOut}
 }
 
 // finish 发送收尾事件。stopReason 为空时按是否出现工具调用自动判定。

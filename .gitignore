@@ -3,6 +3,9 @@
 /codearts2api.exe
 *.exe
 
+# 本地开发用的数据目录（含 STS 凭据 / 日志 / 构建产物，绝不入库）
+/data/
+
 # 运行期状态（含 STS 凭据与 refresh_token，绝不入库）
 codearts2api-data.json
 codearts2api-data.json.tmp

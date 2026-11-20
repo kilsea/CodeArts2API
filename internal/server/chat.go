@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -129,23 +130,25 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		timeout = 300 * time.Second
 	}
 	promptLen := protocol.EstimatePromptLen(body)
+	// 上游按 user-msg-id 记账，反查真实积分时用同一个 id（见 settleCredits）。
+	msgID := newMsgID()
 
 	if req.Stream {
-		s.streamChat(w, r, upBody, model, key, timeout, start, promptLen)
+		s.streamChat(w, r, upBody, model, key, timeout, start, promptLen, msgID)
 		return
 	}
-	s.blockingChat(w, r, upBody, model, key, timeout, start, promptLen)
+	s.blockingChat(w, r, upBody, model, key, timeout, start, promptLen, msgID)
 }
 
 // blockingChat 收集完整回复后一次性返回。
-func (s *Server) blockingChat(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int) {
+func (s *Server) blockingChat(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int, msgID string) {
 	var (
 		raw    []byte
 		outLen int
 	)
 
 	acct, tried, err := s.withAccountRetry(r.Context(), timeout, func(ctx context.Context, acct *codearts.Account) error {
-		res, err := s.chatOnce(ctx, acct, model, body)
+		res, err := s.chatOnce(ctx, acct, model, body, msgID)
 		if err != nil {
 			return err
 		}
@@ -159,19 +162,25 @@ func (s *Server) blockingChat(w http.ResponseWriter, r *http.Request, body []byt
 		return
 	}
 
+	u, _ := usageFromJSON(raw)
 	outLen = completionLen(raw)
 	// 响应体里的 model 必须是**实际执行**的模型：客户端靠它判断自己到底在用什么，
 	// 回填请求里的名字（尤其别名 / 兼容别名命中时）等于骗人。
 	raw = withExecutedModel(raw, model.ID)
-	s.record(requestID(r.Context()), key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+
+	// 先把响应交给客户端，再反查上游账单：查询耗时（通常几百毫秒）不应该
+	// 变成用户等待的一部分。
+	elapsed := time.Since(start)
+	s.record(requestID(r.Context()), key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil,
+		withElapsed(elapsed), withCredit(s.settleCredits(r.Context(), acct, model, msgID, u)))
 }
 
 // streamChat 以 OpenAI SSE 格式流式返回（上游本身就是 SSE，做透明转发 + 错误识别）。
-func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int) {
+func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int, msgID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeRequestErr(w, http.StatusInternalServerError, "服务端不支持流式响应",
@@ -184,10 +193,16 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, body []byte,
 		started   bool
 		outLen    int
 		streamErr error
+		u         tokenUsage
 	)
 
 	acct, tried, err := s.withAccountRetry(r.Context(), timeout, func(ctx context.Context, acct *codearts.Account) error {
-		return s.streamOnce(ctx, acct, model, body, func(chunk []byte) error {
+		return s.streamOnce(ctx, acct, model, body, msgID, func(chunk []byte) error {
+			if bytes.Contains(chunk, []byte(`"usage"`)) {
+				if nu, ok := usageFromJSON(chunk); ok {
+					u = nu
+				}
+			}
 			chunk = withExecutedModel(chunk, model.ID)
 			if !started {
 				h := w.Header()
@@ -234,28 +249,30 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, body []byte,
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
-	s.record(requestID(r.Context()), key, acct, model.ID, true, apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr)
+	elapsed := time.Since(start)
+	s.record(requestID(r.Context()), key, acct, model.ID, true, apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr,
+		withElapsed(elapsed), withCredit(s.settleCredits(r.Context(), acct, model, msgID, u)))
 }
 
 // chatOnce 用指定账号发一次非流式请求。
 //
 // 上游对个别模型（实测 glm-5.3）的非流式接口只回一个空 body 的 400，
 // 这里检测到该特征后自动改用「流式 + 本地聚合」，对客户端保持非流式语义。
-func (s *Server) chatOnce(ctx context.Context, acct *codearts.Account, model registry.Model, body []byte) ([]byte, error) {
+func (s *Server) chatOnce(ctx context.Context, acct *codearts.Account, model registry.Model, body []byte, msgID string) ([]byte, error) {
 	sess, err := s.Cred.Session(ctx, acct, s.resolveOptions())
 	if err != nil {
 		return nil, err
 	}
 
 	if model.StreamOnly {
-		return s.aggregateViaStream(ctx, sess, model, body)
+		return s.aggregateViaStream(ctx, sess, model, body, msgID)
 	}
 
-	raw, err := s.Up.Chat(ctx, sess, model.ID, body)
+	raw, err := s.Up.Chat(ctx, sess, model.ID, body, codearts.WithMsgID(msgID))
 	if err != nil {
 		if codearts.IsEmptyRejection(err) {
 			s.Reg.MarkStreamOnly(model.ID)
-			if agg, aerr := s.aggregateViaStream(ctx, sess, model, body); aerr == nil {
+			if agg, aerr := s.aggregateViaStream(ctx, sess, model, body, msgID); aerr == nil {
 				return agg, nil
 			} else {
 				return nil, aerr
@@ -270,7 +287,7 @@ func (s *Server) chatOnce(ctx context.Context, acct *codearts.Account, model reg
 }
 
 // aggregateViaStream 用流式请求取回分片，再在本地聚合成一次性响应。
-func (s *Server) aggregateViaStream(ctx context.Context, sess *codearts.Session, model registry.Model, body []byte) ([]byte, error) {
+func (s *Server) aggregateViaStream(ctx context.Context, sess *codearts.Session, model registry.Model, body []byte, msgID string) ([]byte, error) {
 	streamBody, err := rewriteStream(body, true)
 	if err != nil {
 		return nil, err
@@ -282,7 +299,7 @@ func (s *Server) aggregateViaStream(ctx context.Context, sess *codearts.Session,
 		}
 		chunks = append(chunks, append([]byte(nil), chunk...))
 		return nil
-	})
+	}, codearts.WithMsgID(msgID))
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +307,7 @@ func (s *Server) aggregateViaStream(ctx context.Context, sess *codearts.Session,
 }
 
 // streamOnce 用指定账号发一次流式请求，逐块回调。
-func (s *Server) streamOnce(ctx context.Context, acct *codearts.Account, model registry.Model, body []byte, onChunk func([]byte) error) error {
+func (s *Server) streamOnce(ctx context.Context, acct *codearts.Account, model registry.Model, body []byte, msgID string, onChunk func([]byte) error) error {
 	sess, err := s.Cred.Session(ctx, acct, s.resolveOptions())
 	if err != nil {
 		return err
@@ -300,7 +317,7 @@ func (s *Server) streamOnce(ctx context.Context, acct *codearts.Account, model r
 			return codearts.UpstreamBusinessError(status, msg)
 		}
 		return onChunk(chunk)
-	})
+	}, codearts.WithMsgID(msgID))
 }
 
 // 重试相关常量。
@@ -490,7 +507,7 @@ func rewriteStream(body []byte, stream bool) ([]byte, error) {
 // 让日志能区分「一次成功」与「重试 N 次后失败」；ErrClass 由 apierr.Classify 推导，
 // 控制台据此按「审核 / 参数 / 登录态 / 临时 / 上游」筛选，不必读错误原文。
 // rid 是响应头 X-Request-Id 的值：客户端贴来一个 id，就能在日志里定位到这一条。
-func (s *Server) record(rid, key string, acct *codearts.Account, model string, stream bool, status int, start time.Time, inLen, outLen, attempts int, err error) {
+func (s *Server) record(rid, key string, acct *codearts.Account, model string, stream bool, status int, start time.Time, inLen, outLen, attempts int, err error, opts ...recordOpt) {
 	e := store.LogEntry{
 		Time:      time.Now().Unix(),
 		RequestID: rid,
@@ -502,8 +519,12 @@ func (s *Server) record(rid, key string, acct *codearts.Account, model string, s
 		PromptLen: inLen,
 		OutputLen: outLen,
 	}
+	for _, fn := range opts {
+		fn(&e)
+	}
 	if acct != nil {
 		e.Account = acct.DisplayName()
+		e.AccountID = acct.ID
 	}
 	if err != nil {
 		e.Err = err.Error()

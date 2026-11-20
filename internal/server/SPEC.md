@@ -55,6 +55,21 @@ references: [adr-0002, adr-0007]
   （snap-manager 统计插件），不消耗积分但也不该被切页签反复触发：服务端按账号缓存 60 秒，
   `?fresh=1` 才回源；并发 4 路，避免打满单账号 3 个并发会话的上限。
 
+- **积分记账先取上游账单，再退估算，且必须跟着账号。** 每个请求用 `codearts.WithMsgID`
+  指定唯一的 `user-msg-id`，响应写完后反查 `/v1/ops/credit/usage?type=msg` 拿
+  `creditCost`（准确、两位小数）；查不到才按模型价格档位估算
+  （`credits = price-weighted tokens / ratio / 1e6`）。日志条目带
+  `account_id` / `in_tokens` / `credits` / `credit_source`，用量桶是
+  **天 × 账号 × 模型**（积分是账号的额度，事后再拆不可能）。账号维度另有
+  `state.credit_spend`（积分快照差值）作为上游真实账单，覆盖 IDE 自己的消耗。
+  反查在响应之后做（2s 超时），`latency_ms` 不计入这段。见 `docs/CREDITS.md`。
+  `/admin/api/usage` 的切面（total / by_hour / by_day / by_model / by_account）全部
+  由 store 计算，控制台只渲染 —— 口径只有一处。
+- **余额趋势按「水位采样」算，不拿账本反推。** `/admin/api/balance-trend` 读
+  `state.balances`（30 分钟 × 账号，见 store）：窗口净变化 = 末值 − 首值；
+  今日 / 昨日 = 日末水位差；消耗 / 到账把相邻采样的正负差分别累加。
+  每日柱的「采样是否完整」按首末采样覆盖时长（≥ 75%）判定，不数采样点个数。
+  点数超过 400 时按组保留最后一个值（阶梯量取平均会把充值台阶抹平）。
 - **请求侧的错误必须在触达上游之前判定。** `rolenorm.go`（角色规范化）与
   `validate.go`（参数校验）都在 `rewriteModel` 之前跑：上游对非法 role 的报错文案是
   「Message role cannot empty」（与真实原因无关），而任何一次非法参数的透传都是一次

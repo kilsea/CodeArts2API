@@ -826,6 +826,17 @@ func (s *ResponsesStream) Feed(chunk []byte) ([]StreamEvent, error) {
 	return evs, nil
 }
 
+// TokenUsage 返回上游 usage 的 token 数（供网关记积分用）。
+//
+// ok=false 表示整条流里都没有 usage（上游没回 / 提前断开），调用方应退回
+// 字符数或本地估算，而不是把 0 当成「没消耗」。
+func (s *ResponsesStream) TokenUsage() (in, cached, out int, ok bool) {
+	if !s.sawUsage {
+		return 0, 0, 0, false
+	}
+	return s.usage.Prompt, s.usage.Cached, s.usage.Completion, true
+}
+
 // Finish 收尾：关闭当前块并发出 response.completed。
 func (s *ResponsesStream) Finish() []StreamEvent {
 	evs := s.closeBlock()
