@@ -90,6 +90,12 @@ python searx/webapp.py               # 默认 8888
 `websearch_api_key` 不会通过 `GET /admin/api/settings` 回显，只返回
 `websearch_api_key_set` 与 `websearch_api_key_masked`。
 
+控制台里切换「检索后端」时，**端点输入框会各自记一份**（存在浏览器的
+`localStorage`，键名 `codearts2api_search_endpoints`）：SearXNG 的
+`http://searxng:8080` 不会被带进 Tavily / Brave 当成它的端点。
+服务端仍然只有一个 `websearch_endpoint`，保存时写入的是**当前后端**那一份；
+换机器或换浏览器不会带过去，需要重新填。
+
 ### 3.1 SearXNG 前面的 Basic Auth
 
 自建 SearXNG 常在反代（Nginx / Traefik / Cloudflare Access）上加一层 Basic Auth，

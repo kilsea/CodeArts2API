@@ -15,7 +15,7 @@
 | `state.vscdb 中未找到 CodeArts 登录会话（请先在 IDE 里登录）` | 桌面端从未登录，或登录态已被清理 | 打开 CodeArts Agent 并完成登录，再重启网关 |
 | `Local State 解析失败` / DPAPI 相关错误 | `Local State` 被其他进程独占，或换了 Windows 用户 | 关闭 IDE 后重试；确认网关与 IDE 是**同一 Windows 用户** |
 | `当前平台不支持自动读取 CodeArts Agent 凭据（仅 Windows 支持 DPAPI）` | Linux / macOS / 容器 | 用「从 session JSON 导入」或「手工录入」，见下 |
-| 路径不对（自定义安装目录） | User Data 不在默认位置 | 启动时加 `-user-data "D:\path\to\User Data"`，或在控制台「设置 → User Data 目录」填写 |
+| 路径不对（自定义安装目录） | User Data 不在默认位置 | 启动时加 `-user-data "D:\path\to\User Data"`，或在控制台「设置 → 服务与访问 → CodeArts Agent User Data 目录」填写 |
 
 ### 非 Windows / Docker 怎么拿凭据？
 
@@ -75,7 +75,7 @@ docker compose run -e CODEARTS_ADMIN_PASSWORD='your-strong-password' codearts2ap
 ### `/v1/*` 返回 401
 
 已签发 API 密钥时必须带 `Authorization: Bearer sk-ca-...`。
-未签发密钥时 `/v1/*` 仅允许本机直连；要放开用「设置 → 允许匿名调用」
+未签发密钥时 `/v1/*` 仅允许本机直连；要放开用「设置 → 服务与访问 → 未签发密钥时允许匿名调用」
 （`CODEARTS_ALLOW_ANONYMOUS=1`），但这等于把账号额度开放给能访问该端口的任何人。
 
 ---
@@ -212,7 +212,12 @@ OpenAI 侧是 `data: {"error":{...}}`，Anthropic 侧是 `event: error`。
 
 ### 「今日领取」显示未领
 
-- 自动领取默认 00:05 执行；确认「设置 → 每天自动领取运营活动奖励」已勾选。
+- 自动领取默认 00:05 执行；确认「设置 → 自动化 → 每天自动领取运营活动奖励」已勾选。
+- 领取时刻在「设置 → 自动化」里改（本地时间）：后台每 5 分钟检查一次，到点后的
+  第一个检查周期开始领，所以**不会精确到秒**。改了时刻点「保存设置」即生效，
+  不用重启；没生效请先确认右上角「有未保存的改动」已经消失。
+- 时分填越界（如 `24` / `60`）会直接保存失败并提示取值范围，**不会**悄悄改回 `00:05`；
+  某一格清空后再保存表示「这一项不改」，不是把它清零。
 - 领取接口是幂等的：重复领不会重复发放，失败只记错误、下一轮自动重试。
 - 报 `凭据（STS security token）已过期，请重新登录` → 凭据已过期，需重新登录或续期。
 - 邀请 / 学生认证类活动**永远不会**自动领：必须由真实事件触发，服务端会拒绝直接领取。
@@ -283,7 +288,7 @@ rm codearts2api-data.json
 ```
 
 恢复：关闭 IDE → 把 `.bak` 覆盖回 `state.vscdb`。
-若不想让网关碰 IDE 数据库，关闭「设置 → 续期后回写 state.vscdb」。
+若不想让网关碰 IDE 数据库，关闭「设置 → 自动化 → 续期后回写 state.vscdb」。
 
 ### 想彻底卸载
 

@@ -1,0 +1,91 @@
+name: Docker
+
+# 自动打包镜像到 GHCR：
+#   - push main            → :latest + :main + :sha-<7位>
+#   - push tag v*          → :latest + :<tag> + :sha-<7位>
+#   - 手动触发             → 按当前分支名 + :latest
+# 平台固定 linux/amd64 + linux/arm64（NAS / ARM 小主机也能直接跑）。
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "examples/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: build & push (ghcr.io)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 计算内嵌版本号（与 make build / release 同一规则）
+        id: ver
+        run: |
+          echo "version=v$(date +%Y%m%d)-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # 版本号本身已经是「v日期-哈希」，所以 tag 事件直接用 ref 名，
+          # 不再套 semver 规则（semver 解析不了 v20261120-abc1234）。
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,format=short,prefix=sha-
+            # latest 跟着 main 走，部署时直接 pull :latest 就是最新构建；
+            # 打 tag 时 latest 也会指向这个 release（内容与 main HEAD 可能不同）。
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=CodeArts2API
+            org.opencontainers.image.description=CodeArts 上游的 OpenAI / Anthropic 兼容网关
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILT=${{ steps.ver.outputs.built }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 摘要
+        run: |
+          {
+            echo "### 镜像已推送"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo ""
+            echo "内嵌版本：\`${{ steps.ver.outputs.version }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

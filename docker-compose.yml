@@ -1,11 +1,11 @@
 ---
 services:
   codearts2api:
-    build:
-      context: .
-      args:
-        VERSION: ${VERSION:-dev}
-    image: codearts2api:latest
+    # 镜像来自 GitHub Actions（.github/workflows/docker.yml）：linux/amd64 + linux/arm64。
+    #   :latest 最新 main 构建   :main 同 latest   :sha-<7位> 某次提交   :v<日期-哈希> tag
+    # 私有包先登录：echo $CR_PAT | docker login ghcr.io -u <你的 GitHub 用户名> --password-stdin
+    # 本地改代码想直接构建：注释掉 image，改用  build: { context: . }  或 `make docker`
+    image: ${CODEARTS_IMAGE:-ghcr.io/kilsea/codearts2api:latest}
     container_name: codearts2api
     restart: unless-stopped
     ports:

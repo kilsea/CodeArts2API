@@ -18,7 +18,7 @@ VERSION ?= v$(shell date +%Y%m%d)-$(COMMIT)$(if $(DIRTY),-dirty)
 BUILT   ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILT)
 
-.PHONY: all build test vet vet-linux fmt lint race console check clean docker
+.PHONY: all build test vet vet-linux fmt lint race console check clean docker docker-multiarch
 
 all: check build
 
@@ -56,4 +56,16 @@ clean:
 	rm -f $(BIN) $(BIN).exe
 
 docker:
-	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) \n		--build-arg BUILT=$(BUILT) -t $(BIN):$(VERSION) .
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILT=$(BUILT) \
+		-t $(BIN):$(VERSION) .
+
+# 多架构镜像需要 buildx；日常交给 CI（.github/workflows/docker.yml）自动推 GHCR。
+docker-multiarch:
+	docker buildx build --platform linux/amd64,linux/arm64 \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILT=$(BUILT) \
+		--load -t $(BIN):$(VERSION) .

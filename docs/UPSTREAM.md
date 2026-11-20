@@ -61,7 +61,7 @@ OAuth 客户端标识：`client_id = codearts-agent`（= 客户端 `product.json
 | `X-Security-token` | STS token | 仅临时凭据时携带 |
 | `Authorization` | `SDK-HMAC-SHA256 ...` | 见 §4 |
 
-可在控制台「设置 → 上游身份头」覆盖前四项（`plugin-name` / `plugin-version` /
+可在控制台「设置 → 模型与上游 → 上游身份头」覆盖前四项（`plugin-name` / `plugin-version` /
 `ide-name` / `ide-version`），便于上游版本变更后无需改代码即可跟随。
 
 ### 2.1 账号身份回查：`GET https://sts.cn-north-4.myhuaweicloud.com/v5/caller-identity`

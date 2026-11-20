@@ -44,7 +44,7 @@ parent: architecture
   `refresh.go` 的 DPoP 已有 `TestDPoPProofVerifies`、
   `TestJWKThumbprintMatchesRefreshTokenBinding`，签名器另有
   `TestSignRequestStableVector` 金标准向量。
-- 但**剩余缺口仍在**：`sqlite.go` 的读取路径（`scanTree` 的溢出页 / 内部页 / 
+- 但**剩余缺口仍在**：`sqlite.go` 的读取路径（`scanTree` 的溢出页 / 内部页 /
   freelist 边界）与 `refresh.go` 的续期失败分支（DPoP 校验失败、refresh_token 过期）
   还没有测试网。在没有这层测试的情况下拆包，等于把「重构错误」和「原有 bug」
   混在一起，出问题无法定位。

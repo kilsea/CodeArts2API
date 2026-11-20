@@ -30,9 +30,10 @@
 
 ### 要部署到容器 / 服务器
 
-1. `README.md` 的「3.5 跨平台 / Docker」
-2. `SECURITY.md` 的「加固清单」
-3. `TROUBLESHOOTING.md` 的「Docker 里打不开控制台」
+1. `README.md` 的「3.6 容器部署（镜像由 CI 自动构建）」
+2. `README.md` 的「3.5 跨平台 / Docker」（容器里怎么拿凭据）
+3. `SECURITY.md` 的「加固清单」
+4. `TROUBLESHOOTING.md` 的「Docker 里打不开控制台」
 
 ### 要改代码
 
@@ -67,11 +68,11 @@ goal                 goal-and-requirements.md        产品目标、能力、非
    ├─ adr-0003       docs/adr/0003-…                  协议层抽出
    ├─ adr-0004       docs/adr/0004-…                  有意推迟的重构
    ├─ adr-0005       docs/adr/0005-…                  只剩积分通道
-   └─ adr-0006       docs/adr/0006-…                  凭据形态显式建模（STS / 永久 AK·SK）
+   ├─ adr-0006       docs/adr/0006-…                  凭据形态显式建模（STS / 永久 AK·SK）
    └─ adr-0007       docs/adr/0007-…                  Responses API 翻译到 Chat Completions，状态只放内存
 ```
 
-新建的 `goal` / `architecture` / 六个模块 `SPEC.md` 目前是 `status: draft` ——
+新建的 `goal` / `architecture` / 七个模块 `SPEC.md` 目前是 `status: draft` ——
 审阅通过后改成 `active`。ADR 已是 `active`（它们本来就已采纳）。
 
 `UPSTREAM.md`、`SECURITY.md`、`RECON.md` 与 `TROUBLESHOOTING.md` **不是**规格：
