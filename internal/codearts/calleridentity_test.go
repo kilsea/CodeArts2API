@@ -7,25 +7,27 @@ import (
 
 // TestParseCallerIdentityURN 锁定实测响应结构（2026-11-01，sts.cn-north-4 /v5/caller-identity）。
 //
+// 用例里的账号名与 ID 都是占位值（结构按实测原样），不要把真实账号贴回来。
+//
 // 回归：早期实现只认 `{"user":{...}}`，而真实响应是 urn 形态，导致解析结果全空
 // 且 err 为 nil —— 「补全账号信息」静默失败，浏览器导入的账号全叫
 // `CodeArts HSTAxxxx`，用户无法把账号和注册手机号对上（备注列只能靠 caller-identity 补）。
 func TestParseCallerIdentityURN(t *testing.T) {
-	raw := []byte(`{"account_id":"01a17825504779df8447435613fb1617",` +
-		`"principal_id":"01a1782550477a3a80ea7fe808b1eb9c",` +
-		`"principal_urn":"iam::01a17825504779df8447435613fb1617:user:hw010922006740496"}`)
+	raw := []byte(`{"account_id":"0123456789abcdef0123456789abcdef",` +
+		`"principal_id":"fedcba9876543210fedcba9876543210",` +
+		`"principal_urn":"iam::0123456789abcdef0123456789abcdef:user:hw000000000000000"}`)
 	var out callerIdentityResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)
 	}
 	id, name, domain := parseCallerIdentity(&out)
-	if name != "hw010922006740496" {
-		t.Errorf("账号名 = %q, 期望 hw010922006740496", name)
+	if name != "hw000000000000000" {
+		t.Errorf("账号名 = %q, 期望 hw000000000000000", name)
 	}
-	if domain != "01a17825504779df8447435613fb1617" {
+	if domain != "0123456789abcdef0123456789abcdef" {
 		t.Errorf("域 ID = %q", domain)
 	}
-	if id != "01a1782550477a3a80ea7fe808b1eb9c" {
+	if id != "fedcba9876543210fedcba9876543210" {
 		t.Errorf("用户 ID = %q", id)
 	}
 }

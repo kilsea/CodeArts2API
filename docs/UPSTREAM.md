@@ -71,11 +71,12 @@ OAuth 客户端标识：`client_id = codearts-agent`（= 客户端 `product.json
 实测响应是 **urn 形态，没有 `user` 对象**（2026-11-01）：
 
 ```json
-{"account_id":"01a17825504779df8447435613fb1617",
- "principal_id":"01a1782550477a3a80ea7fe808b1eb9c",
- "principal_urn":"iam::01a17825504779df8447435613fb1617:user:hw010922006740496"}
+{"account_id":"0123456789abcdef0123456789abcdef",
+ "principal_id":"fedcba9876543210fedcba9876543210",
+ "principal_urn":"iam::0123456789abcdef0123456789abcdef:user:hw000000000000000"}
 ```
 
+- 下面示例里的账号名 / ID 已换成占位值（结构不变）；
 - 账号名 = `principal_urn` 最后一段（`user:` / `group:` 之后）；
 - `domain_id` = `account_id`；用户 ID = `principal_id`。
 

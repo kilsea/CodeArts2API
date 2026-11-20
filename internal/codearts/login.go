@@ -675,9 +675,9 @@ type callerIdentityResponse struct {
 // 实测（2026-11-01，sts.cn-north-4 /v5/caller-identity）返回的是 urn 形态，**没有**
 // user 对象：
 //
-//	{"account_id":"01a17825504779df8447435613fb1617",
-//	 "principal_id":"01a1782550477a3a80ea7fe808b1eb9c",
-//	 "principal_urn":"iam::01a17825504779df8447435613fb1617:user:hw010922006740496"}
+//	{"account_id":"0123456789abcdef0123456789abcdef",
+//	 "principal_id":"fedcba9876543210fedcba9876543210",
+//	 "principal_urn":"iam::0123456789abcdef0123456789abcdef:user:hw000000000000000"}
 //
 // 早期实现只认 user.{id,name,domain_id}，字段全空但 err 也是 nil，于是
 // 「补全账号信息」这一步静默失败 —— 浏览器登录导入的账号只能退回
