@@ -491,8 +491,9 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 
 ### 3.6 容器部署（镜像由 CI 自动构建）
 
-`.github/workflows/docker.yml` 在每次 push `main` 和打 tag 时构建**多架构镜像**
-（`linux/amd64` + `linux/arm64`）推到 GHCR：
+`.github/workflows/docker.yml` 在每次 push `main` 时构建**多架构镜像**
+（`linux/amd64` + `linux/arm64`）推到 GHCR（只改文档/CI 的提交会被 `paths-ignore` 跳过，
+需要补构建时手动 dispatch 一次）：
 
 | 标签 | 含义 |
 | --- | --- |
@@ -501,11 +502,21 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 | `ghcr.io/kilsea/codearts2api:sha-abc1234` | 对应某一次提交 |
 | `ghcr.io/kilsea/codearts2api:v20261120-abc1234` | 打 tag 的发布版本 |
 
-包默认是私有的，部署的机器上先登录（或在 GitHub 的 Packages 设置里把它改成 public）：
+包已设为 **public**，匿名即可拉取，部署机器不用配任何凭据：
 
 ```bash
-echo "$CR_PAT" | docker login ghcr.io -u <你的 GitHub 用户名> --password-stdin
+docker pull ghcr.io/kilsea/codearts2api:latest
 ```
+
+> GHCR 的包可见性与仓库无关，**新建包默认是 private**（公开不可撤销，GitHub 走安全默认）。
+> 换仓库重建之后包会重新变回 private，需要到
+> `https://github.com/orgs/<org>/packages/container/package/codearts2api/settings`
+> 的 Danger Zone 里改回 public —— 这一步只能网页操作，REST API 没有对应端点。
+> 私有状态下拉到镜像要先登录：
+>
+> ```bash
+> echo "$CR_PAT" | docker login ghcr.io -u <你的 GitHub 用户名> --password-stdin
+> ```
 
 最小 compose（完整版见仓库里的 [`docker-compose.yml`](docker-compose.yml)）：
 
