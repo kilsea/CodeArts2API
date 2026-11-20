@@ -11,6 +11,9 @@ codearts-session.json.tmp
 *.codearts2api.bak
 *.codearts2api.tmp
 
+# SearXNG 的运行时配置（首次启动自动生成，里面带 secret_key，绝不入库）
+/searxng/
+
 # 本地临时文件
 /port.txt
 /sid.txt

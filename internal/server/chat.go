@@ -101,6 +101,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 联网搜索：客户端声明 type=web_search 时由网关代执行（上游不支持内置工具）。
+	// 放在模型与计费校验之后、估算 promptLen 之前：非法模型不该白白触发一次外部检索，
+	// 而日志里的长度必须是真实发给上游的长度。
+	searchRes, serr := s.applyChatWebSearch(r.Context(), body)
+	if serr != nil {
+		s.record(requestID(r.Context()), extractKey(r), nil, model.ID, req.Stream,
+			apierr.From(serr).Status, start, 0, 0, 0, serr)
+		writeAPIErr(w, errOpenAI, serr)
+		return
+	}
+	if searchRes != nil {
+		body = searchRes.body
+		w.Header().Set("X-Gateway-Web-Search", searchRes.info)
+	}
+
 	upBody, err := rewriteModel(body, model.ID, req.Stream)
 	if err != nil {
 		writeRequestErr(w, http.StatusBadRequest, "请求体改写失败: "+err.Error(),

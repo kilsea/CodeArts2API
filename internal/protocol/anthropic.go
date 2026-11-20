@@ -33,7 +33,13 @@ type Message struct {
 }
 
 // Tool 是 Anthropic 的工具声明。
+//
+// Type 是**服务端工具**（web_search_20250305 / computer_20241022 …）的标识；
+// 自定义工具（客户端自己实现、用 input_schema 声明）留空或写 "custom"。
+// 服务端工具不能当成 function 转发给上游：模型会照着幻觉调用，
+// 而客户端根本不会收到结果（server 层在 server/anthropic.go 里显式处理）。
 type Tool struct {
+	Type        string          `json:"type"`
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`

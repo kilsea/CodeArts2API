@@ -591,6 +591,63 @@
           </div>
 
           <div class="settings-group">
+            <h3>联网搜索（Web Search）</h3>
+            <label class="check" for="sSearchEnabled">
+              <input type="checkbox" id="sSearchEnabled">
+              <span>启用联网搜索</span>
+            </label>
+            <div class="field-grid">
+              <div class="field">
+                <label for="sSearchProvider">检索后端</label>
+                <select id="sSearchProvider">
+                  <option value="searxng">SearXNG（自托管，无需 Key）</option>
+                  <option value="tavily">Tavily API</option>
+                  <option value="brave">Brave Search API</option>
+                </select>
+                <span class="field-hint" id="sSearchProviderHint">docker 起一个即可。</span>
+              </div>
+              <div class="field">
+                <label for="sSearchEndpoint">端点</label>
+                <input id="sSearchEndpoint" placeholder="http://searxng:8080">
+                <span class="field-hint" id="sSearchEndpointHint">实例地址，如 http://searxng:8080。</span>
+              </div>
+              <div class="field">
+                <label for="sSearchKey">API Key</label>
+                <input id="sSearchKey" type="password" autocomplete="new-password" placeholder="user:pass（可选）">
+                <span class="field-hint" id="sSearchKeyHint">已设置时留空表示不修改。</span>
+              </div>
+              <div class="field">
+                <label for="sSearchResults">返回条数</label>
+                <input id="sSearchResults" type="number" min="1" max="10">
+              </div>
+              <div class="field">
+                <label for="sSearchTimeout">检索超时（秒）</label>
+                <input id="sSearchTimeout" type="number" min="1">
+              </div>
+              <div class="field">
+                <label for="sSearchCache">结果缓存（秒）</label>
+                <input id="sSearchCache" type="number" min="0">
+                <span class="field-hint">同一 query 的缓存时长；0 = 不缓存。</span>
+              </div>
+              <div class="field">
+                <label for="sSearchPageChars">单页正文上限（字符）</label>
+                <input id="sSearchPageChars" type="number" min="0">
+              </div>
+            </div>
+            <label class="check mt-12" for="sSearchFetch">
+              <input type="checkbox" id="sSearchFetch">
+              <span>抓取网页正文
+                <span class="check-hint">对前 3 条结果并发抓正文（带 SSRF 防护：只允许 80/443、拒绝内网 IP）。关闭时只用搜索摘要，更快但信息更少。</span>
+              </span>
+            </label>
+            <div class="row mt-12">
+              <span class="field-label">联通性测试</span>
+              <input class="w-280" id="sSearchQuery" placeholder="测试关键词，如：杭州天气">
+              <button class="btn xs" id="testSearch">测试</button>
+            </div>
+          </div>
+
+          <div class="settings-group">
             <h3>调试</h3>
             <label class="check" for="sDebugCapture">
               <input type="checkbox" id="sDebugCapture">

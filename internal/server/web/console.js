@@ -98,6 +98,106 @@
     return b;
   }
 
+  // --- 行内「更多」菜单 ---
+  //
+  // 账号行的次要操作收进这里。为什么不用绝对定位的下拉：表格容器是
+  // overflow-x:auto，会直接把下拉裁掉（还会撑出内部滚动条）。所以菜单挂在
+  // body 上、用 fixed 定位，坐标按触发按钮实时算；滚动、缩放、点空白、Esc 都关。
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var rowMenuEl = null, rowMenuAnchor = null;
+
+  function svgIcon(ds){
+    var s = document.createElementNS(SVGNS, "svg");
+    s.setAttribute("class", "ico");
+    s.setAttribute("viewBox", "0 0 24 24");
+    s.setAttribute("aria-hidden", "true");
+    ds.forEach(function(d){
+      var p = document.createElementNS(SVGNS, "path");
+      p.setAttribute("d", d);
+      s.appendChild(p);
+    });
+    return s;
+  }
+
+  function moreBtn(buildItems){
+    var b = mk("button", "btn xs menu-btn");
+    b.type = "button";
+    b.title = "更多操作";
+    b.setAttribute("aria-label", "更多操作");
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", "false");
+    b.appendChild(svgIcon(["M5 12h.01", "M12 12h.01", "M19 12h.01"]));
+    b.onclick = function(ev){
+      ev.stopPropagation();
+      if (rowMenuEl && rowMenuAnchor === b) { closeRowMenu(true); return; }
+      closeRowMenu(false);
+      openRowMenu(b, buildItems());
+    };
+    return b;
+  }
+
+  function openRowMenu(anchor, items){
+    var el = mk("div", "row-menu");
+    el.setAttribute("role", "menu");
+    items.forEach(function(it){
+      if (it.sep) { el.appendChild(mk("div", "sep")); return; }
+      var b = mk("button", "mi" + (it.danger ? " danger" : ""), it.label);
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      b.onclick = function(){ closeRowMenu(false); it.fn(); };
+      el.appendChild(b);
+    });
+    // 先挂上再量尺寸，才能决定向上还是向下展开。
+    el.style.visibility = "hidden";
+    document.body.appendChild(el);
+    var r = anchor.getBoundingClientRect();
+    var w = el.offsetWidth, h = el.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.min(Math.max(8, r.right - w), Math.max(8, vw - w - 8));
+    var top = r.bottom + 6;
+    if (top + h > vh - 8) top = Math.max(8, r.top - h - 6);
+    el.style.left = left + "px";
+    el.style.top = top + "px";
+    el.style.visibility = "";
+    rowMenuEl = el;
+    rowMenuAnchor = anchor;
+    anchor.setAttribute("aria-expanded", "true");
+    document.addEventListener("mousedown", onMenuDocDown, true);
+    document.addEventListener("keydown", onMenuKey, true);
+    window.addEventListener("scroll", closeRowMenu, true);
+    window.addEventListener("resize", closeRowMenu);
+    var first = el.querySelector("button");
+    if (first) first.focus();
+  }
+
+  function onMenuDocDown(ev){
+    if (!rowMenuEl) return;
+    if (rowMenuEl.contains(ev.target)) return;
+    if (rowMenuAnchor && (ev.target === rowMenuAnchor || rowMenuAnchor.contains(ev.target))) return;
+    closeRowMenu(false);
+  }
+
+  function onMenuKey(ev){
+    if (ev.key === "Escape") closeRowMenu(true);
+  }
+
+  // closeRowMenu 同时作为 scroll / resize 监听器：那时第一个参数不是布尔值。
+  function closeRowMenu(restoreFocus){
+    if (!rowMenuEl) return;
+    var anchor = rowMenuAnchor;
+    rowMenuEl.remove();
+    rowMenuEl = null;
+    rowMenuAnchor = null;
+    if (anchor) {
+      anchor.setAttribute("aria-expanded", "false");
+    }
+    document.removeEventListener("mousedown", onMenuDocDown, true);
+    document.removeEventListener("keydown", onMenuKey, true);
+    window.removeEventListener("scroll", closeRowMenu, true);
+    window.removeEventListener("resize", closeRowMenu);
+    if (restoreFocus === true && anchor) anchor.focus();
+  }
+
   // --- 就地更新助手 -------------------------------------------------------
   // 自动刷新每 5 秒跑一次，绝大多数值跟上一次完全一样。无条件给 textContent /
   // value 赋值会让浏览器先删旧的文本节点再插一个新的：视觉上是「页面自己闪一下」，
@@ -202,6 +302,15 @@
     var p = function(n){ return (n < 10 ? "0" : "") + n; };
     return (d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
   }
+  // syncEvery 把「定时同步间隔（秒）」说成人话：6h → 6 小时。
+  function syncEvery(sec){
+    if (sec >= 3600) {
+      var h = sec / 3600;
+      return (h % 1 ? h.toFixed(1) : String(h)) + " 小时";
+    }
+    if (sec >= 60) return Math.round(sec / 60) + " 分钟";
+    return sec + " 秒";
+  }
 
   function setHealth(cls, text){
     var el = $("#health");
@@ -286,7 +395,15 @@
       lastModels[m.id] = m;
       tb.appendChild(modelRow(m));
     });
-    setText($("#modelHint"), d.upstream_error ? ("最近一次上游刷新失败：" + d.upstream_error) : "");
+    // 清单由后台定时同步：把「上次同步 + 周期」写出来，免得以为列表不动就是坏了。
+    var hint = "";
+    if (d.upstream_error) {
+      hint = "最近一次上游刷新失败：" + d.upstream_error;
+    } else if (d.models_loaded_at) {
+      hint = "清单同步于 " + fmtShort(d.models_loaded_at);
+      if (d.models_sync_seconds > 0) hint += "，每 " + syncEvery(d.models_sync_seconds) + "自动同步";
+    }
+    setText($("#modelHint"), hint);
   }
 
   // 每个模型的测活状态：id -> {state:"idle|busy|ok|err", err}
@@ -481,6 +598,8 @@
   }
 
   function renderAccounts(d){
+    // 整表重建会把菜单锚点一起换掉，先把打开的菜单收掉。
+    closeRowMenu(false);
     var tb = $("#accounts");
     tb.textContent = "";
     var accts = d.accounts || [];
@@ -492,7 +611,7 @@
       var statusCell = cell("");
       if (a.enabled) {
         var okStatus = a.status === "ok";
-        statusCell.appendChild(pill(okStatus ? "ok" : (a.status || "error"), okStatus ? "ok" : "err"));
+        statusCell.appendChild(pill(okStatus ? "正常" : "异常", okStatus ? "ok" : "err"));
         // 失败账号会进入冷却，冷却期内不参与轮转；到期自动做一次半开探测。
         if (!okStatus && a.cooldown_until) {
           var cdLeft = a.cooldown_until * 1000 - Date.now();
@@ -541,19 +660,25 @@
       var ops = cell("", "actions-cell");
       ops.appendChild(btn("探活", "xs", function(){ checkin(a.id); }));
       ops.appendChild(btn("领福利", "xs", function(){ claim(a.id); }));
-      ops.appendChild(btn("重读", "xs", function(){ accountOp("reimport", {id:a.id}); }));
-      ops.appendChild(btn("导出", "xs", function(){ exportSession(a.id); }));
-      ops.appendChild(btn(a.enabled ? "停用" : "启用", "xs", function(){ accountOp("toggle", {id:a.id}); }));
-      ops.appendChild(btn("备注", "xs", function(){
-        var v = prompt("账号备注（如注册手机号）", a.note || "");
-        if (v === null) return;
-        accountOp("set-note", {id:a.id, note:v.trim()});
-      }));
-      if (a.failures > 0) {
-        ops.appendChild(btn("清错", "xs", function(){ accountOp("clear-errors", {id:a.id}); }));
-      }
-      ops.appendChild(btn("删除", "xs danger", function(){
-        if (confirm("确定删除账号 " + a.name + "？")) accountOp("remove", {id:a.id});
+      ops.appendChild(moreBtn(function(){
+        var items = [
+          { label:"重读登录态", fn:function(){ accountOp("reimport", {id:a.id}); } },
+          { label:"导出 session", fn:function(){ exportSession(a.id); } },
+          { label:"备注…", fn:function(){
+            var v = prompt("账号备注（如注册手机号）", a.note || "");
+            if (v === null) return;
+            accountOp("set-note", {id:a.id, note:v.trim()});
+          } }
+        ];
+        if (a.failures > 0) {
+          items.push({ label:"清除错误", fn:function(){ accountOp("clear-errors", {id:a.id}); } });
+        }
+        items.push({ label: a.enabled ? "停用账号" : "启用账号", fn:function(){ accountOp("toggle", {id:a.id}); } });
+        items.push({ sep:true });
+        items.push({ label:"删除账号", danger:true, fn:function(){
+          if (confirm("确定删除账号 " + a.name + "？")) accountOp("remove", {id:a.id});
+        } });
+        return items;
       }));
 
       var r = row([
@@ -755,8 +880,15 @@
     setValue($("#sAliases"), JSON.stringify(s.model_aliases || {}, null, 2));
     setChecked($("#sSearchEnabled"), !!s.websearch_enabled);
     setValue($("#sSearchProvider"), s.websearch_provider || "searxng");
-    setValue($("#sSearchEndpoint"), s.websearch_endpoint || "");
-    setAttr($("#sSearchKey"), "placeholder", s.websearch_api_key_set ? "已设置，留空则不修改" : "SearXNG 留空");
+    // Key 一旦存过，输入框就变成「留空 = 不改」；提示文案也跟着变。
+    searchKeySet = !!s.websearch_api_key_set;
+    // 服务端存的是「当前 provider 的端点」：没在改设置时用它刷新当前槽，
+    // 其它 provider 的端点沿用本地记忆（切回去不会丢）。
+    if (!settingsDirty) {
+      searchEndpoints[$("#sSearchProvider").value] = s.websearch_endpoint || "";
+      persistSearchEndpoints();
+    }
+    syncSearchProviderHint();
     setValue($("#sSearchKey"), "");
     setValue($("#sSearchResults"), s.websearch_max_results || 5);
     setValue($("#sSearchTimeout"), s.websearch_timeout_sec || 8);
@@ -1619,6 +1751,76 @@
       toast("搜索成功：" + (r.count || 0) + " 条" + (first ? "（" + first + "）" : ""), "ok");
     }).catch(function(e){ toast("搜索失败：" + e.message, "err"); });
   });
+  // 切检索后端时同步占位符和三条提示：SearXNG 是「内网一个 docker、不需要 Key」，
+  // Tavily / Brave 则是「端点留空用官方地址 + 填 API Key」。写死一句「SearXNG 填实例地址；
+  // Tavily / Brave 留空」对两种人都没用 —— 选了哪个就只说那个。
+  var SEARCH_HINTS = {
+    searxng: {
+      provider: "docker 起一个即可。",
+      endpoint: "实例地址，如 http://searxng:8080。",
+      key: "挂了 Basic Auth 就填 user:pass。",
+      endpointPh: "http://searxng:8080",
+      keyPh: "user:pass（可选）"
+    },
+    tavily: {
+      provider: "官方托管。",
+      endpoint: "留空用官方地址。",
+      key: "Tavily API Key。",
+      endpointPh: "",
+      keyPh: "tvly-..."
+    },
+    brave: {
+      provider: "官方托管。",
+      endpoint: "留空用官方地址。",
+      key: "Brave API Key。",
+      endpointPh: "",
+      keyPh: "Brave Subscription Token"
+    }
+  };
+  // searchKeySet：已存过 Key 时输入框语义是「留空不改」，提示要以它为准。
+  var searchKeySet = false;
+
+  // 服务端只存一个 websearch_endpoint（当前 provider 的），但端点天然是按后端分开的：
+  // 切到 Tavily 还带着 SearXNG 的 http://searxng:8080 就是错的（会被当成 Tavily 端点）。
+  // 所以每个 provider 各记一份在 localStorage，切换时找回自己的值，保存时只交当前那个。
+  var SEARCH_EP_KEY = "codearts2api_search_endpoints";
+  var searchEndpoints = {};
+  try {
+    searchEndpoints = JSON.parse(localStorage.getItem(SEARCH_EP_KEY) || "{}") || {};
+  } catch (e) { searchEndpoints = {}; }
+  function persistSearchEndpoints(){
+    try { localStorage.setItem(SEARCH_EP_KEY, JSON.stringify(searchEndpoints)); } catch (e) {}
+  }
+
+  function syncSearchProviderHint(){
+    var p = $("#sSearchProvider").value;
+    var h = SEARCH_HINTS[p] || SEARCH_HINTS.searxng;
+    setText($("#sSearchProviderHint"), h.provider);
+    setText($("#sSearchEndpointHint"), h.endpoint);
+    setText($("#sSearchKeyHint"), searchKeySet ? "已设置时留空表示不修改。" : h.key);
+    setAttr($("#sSearchEndpoint"), "placeholder", h.endpointPh);
+    setAttr($("#sSearchKey"), "placeholder", searchKeySet ? "已设置，留空则不修改" : h.keyPh);
+    // 端点框换成这个后端自己记的地址（没填过就留空 → 用官方地址）。
+    setValue($("#sSearchEndpoint"), searchEndpoints[p] || "");
+  }
+  if ($("#sSearchProvider")) {
+    $("#sSearchProvider").addEventListener("change", syncSearchProviderHint);
+    // 边输边记：change 触发时 select 已经是新 provider，来不及回存旧值。
+    $("#sSearchEndpoint").addEventListener("input", function(){
+      searchEndpoints[$("#sSearchProvider").value] = this.value.trim();
+      persistSearchEndpoints();
+    });
+    syncSearchProviderHint();
+  }
+  // 数字输入框：空值/null 表示「这次不改这个字段」（服务端收到 null 就保持原值），
+  // 不能退化成 0 —— 否则用户清空分钟格再点保存，领取时刻会被悄悄改成整点。
+  function numOrNull(id){
+    var el = $(id);
+    var v = el ? el.value.trim() : "";
+    if (v === "") return null;
+    var n = parseInt(v, 10);
+    return isNaN(n) ? null : n;
+  }
   on("#saveSettings", function(){
     var aliases;
     try { aliases = JSON.parse($("#sAliases").value || "{}"); }

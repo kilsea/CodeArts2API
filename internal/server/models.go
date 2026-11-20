@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -22,6 +23,13 @@ type modelCache struct {
 
 func newModelCache() *modelCache { return &modelCache{} }
 
+// status 返回最近一次刷新的时间与错误（错误为空表示上次成功）。
+func (c *modelCache) status() (time.Time, string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.loadedAt, c.err
+}
+
 // errEmptyModelList 表示上游 200 但没返回任何可用模型。
 var errEmptyModelList = errors.New("上游未返回任何可用模型")
 
@@ -30,6 +38,22 @@ var errEmptyModelList = errors.New("上游未返回任何可用模型")
 // 2026-10 起免费权益通道下线，模型清单只有一个来源：`GET /v1/model/builtin`
 // （积分通道）。拉取失败时保留现有清单，只记录错误。
 func (s *Server) RefreshModels(ctx context.Context) error {
+	err := s.refreshModels(ctx)
+
+	// 成功和失败都记一笔：控制台靠它显示「最近一次上游刷新失败」，
+	// 定时同步也靠 loadedAt 判断清单有多旧。
+	s.cache.mu.Lock()
+	s.cache.loadedAt = time.Now()
+	if err != nil {
+		s.cache.err = err.Error()
+	} else {
+		s.cache.err = ""
+	}
+	s.cache.mu.Unlock()
+	return err
+}
+
+func (s *Server) refreshModels(ctx context.Context) error {
 	acct := s.Store.NextAccount()
 	if acct == nil {
 		return apierr.NoAccount
@@ -49,12 +73,38 @@ func (s *Server) RefreshModels(ctx context.Context) error {
 	}
 
 	s.Reg.Replace(models)
-
-	s.cache.mu.Lock()
-	s.cache.loadedAt = time.Now()
-	s.cache.err = ""
-	s.cache.mu.Unlock()
 	return nil
+}
+
+// StartModelSyncLoop 按固定间隔后台刷新模型清单。
+//
+// 只在启动时刷一次的话，上游新增/下线模型后控制台和 /v1/models 会一直是旧清单；
+// 而每次请求都刷又太贵，所以默认低频（几小时一次，见 -models-sync）。
+// interval <= 0 表示关闭。
+func (s *Server) StartModelSyncLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	s.modelSyncEvery.Store(int64(interval.Seconds()))
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				err := s.RefreshModels(runCtx)
+				cancel()
+				if err != nil {
+					log.Printf("定时同步上游模型清单失败（继续用现有清单，%s 后重试）: %v", interval, err)
+					continue
+				}
+				log.Printf("已定时同步上游模型清单：%d 个模型", len(s.Reg.List(s.Store.Settings().ModelAliases)))
+			}
+		}
+	}()
 }
 
 // refreshModelsIfStale 在缓存过期时后台刷新一次模型清单。
@@ -67,12 +117,8 @@ func (s *Server) refreshModelsIfStale(maxAge time.Duration) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.RefreshModels(ctx); err != nil {
-		s.cache.mu.Lock()
-		s.cache.err = err.Error()
-		s.cache.loadedAt = time.Now()
-		s.cache.mu.Unlock()
-	}
+	// 失败信息由 RefreshModels 记进 cache，这里只需要打日志之外的副作用。
+	_ = s.RefreshModels(ctx)
 }
 
 // handleModels 实现 GET /v1/models。

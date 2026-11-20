@@ -163,7 +163,7 @@ func TestResponsesUnsupportedFields(t *testing.T) {
 		{"conversation", `{"model":"m","input":"x","conversation":"conv_1"}`, "conversation"},
 		{"prompt", `{"model":"m","input":"x","prompt":{"id":"p"}}`, "prompt"},
 		{"truncation", `{"model":"m","input":"x","truncation":"auto"}`, "truncation"},
-		{"non-function tool", `{"model":"m","input":"x","tools":[{"type":"web_search"}]}`, "tools[0].type"},
+		{"non-function tool", `{"model":"m","input":"x","tools":[{"type":"code_interpreter"}]}`, "tools[0].type"},
 		{"input_file", `{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_file"}]}]}`, "input[0].content[0]"},
 		{"item_reference", `{"model":"m","input":[{"type":"item_reference","id":"x"}]}`, "input[0]"},
 	}

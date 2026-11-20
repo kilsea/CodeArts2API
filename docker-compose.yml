@@ -30,3 +30,19 @@ services:
       # 容器里没有 DPAPI，无法自动读取桌面端凭据；
       # 请在控制台用「手工录入」或「从 session JSON 导入」提供凭据。
       - -no-import
+
+  # 可选的联网搜索后端（默认不启动）：
+  #   docker compose --profile search up -d
+  # 启动后网关端「设置 → 联网搜索 → 端点」填 http://searxng:8080。
+  # 首次启动会生成 ./searxng/settings.yml，必须确认：
+  #   search.formats 包含 json，server.limiter 为 false（见 docs/WEBSEARCH.md）。
+  searxng:
+    image: searxng/searxng:latest
+    container_name: codearts2api-searxng
+    profiles: ["search"]
+    restart: unless-stopped
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./searxng:/etc/searxng

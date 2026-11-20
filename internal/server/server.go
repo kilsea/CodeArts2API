@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"codearts2api/internal/apierr"
@@ -21,6 +22,7 @@ import (
 	"codearts2api/internal/ratelimit"
 	"codearts2api/internal/registry"
 	"codearts2api/internal/store"
+	"codearts2api/internal/websearch"
 )
 
 // Server 是网关 HTTP 服务。
@@ -54,6 +56,15 @@ type Server struct {
 	// previous_response_id）。惰性初始化：测试会直接构造 &Server{}。
 	respOnce  sync.Once
 	respStore *responseStore
+
+	// 联网搜索服务按配置指纹热更新（见 websearch.go）。
+	searchMu  sync.Mutex
+	searchSvc *websearch.Service
+	searchFP  string
+
+	// modelSyncEvery 是定时同步模型清单的间隔（秒），仅用于控制台展示；
+	// 0 表示关闭周期性同步。atomic 是因为状态接口可能在任意时刻被请求。
+	modelSyncEvery atomic.Int64
 }
 
 // New 构造服务。
@@ -116,6 +127,8 @@ func (s *Server) Handler() http.Handler {
 	// OpenAI Responses API（翻译到上游的 Chat Completions）
 	mux.HandleFunc("/v1/responses", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponses)))
 	mux.HandleFunc("/v1/responses/input_tokens", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponsesInputTokens)))
+	// /v1/search 是网关自己实现的联网检索（Tavily 形状），与上游无关。
+	mux.HandleFunc("/v1/search", s.withAuth(s.withRateLimit(errOpenAI, s.handleSearch)))
 	mux.HandleFunc("/v1/responses/{id}", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponsesByID)))
 	mux.HandleFunc("/v1/responses/{id}/input_items", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponsesInputItems)))
 
@@ -131,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/api/settings", s.withAdminAuth(s.handleAdminSettings))
 	mux.HandleFunc("/admin/api/checkin", s.withAdminAuth(s.handleAdminCheckin))
 	mux.HandleFunc("/admin/api/credits", s.withAdminAuth(s.handleAdminCredits))
+	mux.HandleFunc("/admin/api/websearch/test", s.withAdminAuth(s.handleAdminWebSearchTest))
 	mux.HandleFunc("/admin/api/models/probe", s.withAdminAuth(s.handleAdminModelProbe))
 	mux.HandleFunc("/admin/api/models/refresh", s.withAdminAuth(s.handleAdminRefreshModels))
 	mux.HandleFunc("/admin/api/claim", s.withAdminAuth(s.handleAdminClaim))
@@ -525,6 +539,17 @@ func sanitizedSettings(st store.Settings) map[string]any {
 		"debug_capture":          st.DebugCapture,
 		"debug_capture_sample":   st.DebugCaptureSample,
 		"admin_password_set":     st.AdminPassword != "",
+
+		"websearch_enabled":        st.WebSearchEnabled,
+		"websearch_provider":       st.WebSearchProvider,
+		"websearch_endpoint":       st.WebSearchEndpoint,
+		"websearch_api_key_set":    st.WebSearchAPIKey != "",
+		"websearch_api_key_masked": codearts.Mask(st.WebSearchAPIKey),
+		"websearch_max_results":    st.WebSearchMaxResults,
+		"websearch_timeout_sec":    st.WebSearchTimeout,
+		"websearch_fetch_pages":    st.WebSearchFetchPages,
+		"websearch_max_page_chars": st.WebSearchMaxPageChars,
+		"websearch_cache_ttl_sec":  st.WebSearchCacheTTL,
 	}
 }
 

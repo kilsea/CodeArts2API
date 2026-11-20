@@ -67,7 +67,8 @@
 | `response_format` | 只支持 `text` / `json_object`，其余 **400** `unsupported_parameter` | ✅ |
 | `seed` | **不支持**：从请求体摘掉，响应头 `X-Gateway-Unsupported: seed` | ✅ |
 | `logprobs` / `top_logprobs` | **不支持**：摘掉并声明 | ✅ |
-| `tools` / `tool_choice` | 透传（上游支持 function calling） | ✅ |
+| `tools` / `tool_choice`（`type=function`） | 透传（上游支持 function calling） | ✅ |
+| `tools` 含 `{"type":"web_search"}` / `web_search_preview` | **网关代执行**：检索 → 注入 `system` → 摘掉该工具；响应头 `X-Gateway-Web-Search`。网关未启用时 400 `websearch_disabled`（不静默降级） | ✅ 需配置，见 [WEBSEARCH.md](WEBSEARCH.md) |
 | `stop` / `stream` / `user` / `metadata` | 透传 | ✅ |
 | 请求体大小 | > 32 MiB → **413** `request_too_large` | ✅ |
 | `messages` 条数 | > 2000 → **413** `request_too_large` + `param=messages` | ✅ |
@@ -117,7 +118,9 @@ Anthropic 侧：`{"type":"error","error":{"type":"…","message":"…","code":"�
 | --- | --- | --- |
 | `invalid_role` | 400 | `messages[i].role` 不认识（`param` 指到具体下标） |
 | `invalid_value` | 400 | 参数越界 / 类型不对 |
-| `unsupported_parameter` | 400 | 参数合法但网关/上游不支持（`n>1`、`response_format` 等） |
+| `unsupported_parameter` | 400 | 参数合法但网关/上游不支持（`n>1`、`response_format`、其它服务端工具等） |
+| `websearch_disabled` | 400 / 503 | 客户端要用联网搜索，但网关没启用 / 没配置后端（400 来自模型接口，503 来自 `/v1/search`） |
+| `websearch_failed` | 502 | 检索后端失败（SearXNG 不可达 / 未开 JSON、Tavily 额度用尽…），`err_class=websearch` |
 | `request_too_large` | 413 | 请求体或 `messages` 超限 |
 | `model_not_found` | 404 | 模型名不存在（不会静默换成别的模型） |
 | `model_not_multimodal` | 400 | 给纯文本模型发了图片（上游 406） |
@@ -147,7 +150,8 @@ Anthropic 侧：`{"type":"error","error":{"type":"…","message":"…","code":"�
 | `text.format` = `text` / `json_object` | ✅ | |
 | `text.format` = `json_schema` | ❌ | 400 `unsupported_parameter`（上游不支持结构化输出约束） |
 | `tools`（`type=function`，扁平） | ✅ | 翻译为 Chat 的嵌套 `function` 形态 |
-| 其它工具类型（`web_search` / `mcp` / `code_interpreter` …） | ❌ | 400 `unsupported_parameter`，不静默降级 |
+| `tools` 含 `{"type":"web_search"}` | ✅ | 网关代执行检索后注入 `system`；不产出 `web_search_call` 条目 |
+| 其它工具类型（`mcp` / `code_interpreter` / `file_search` …） | ❌ | 400 `unsupported_parameter`，不静默降级 |
 | `tool_choice` = `auto` / `none` / `required` / 指定函数 | ✅ | `allowed_tools` → 400 |
 | `input_image`（`image_url`） | ✅ | `file_id` 形式不支持 |
 | `input_file` | ❌ | 400；请把文件内容当文本传入 |
@@ -179,6 +183,8 @@ Anthropic 侧：`{"type":"error","error":{"type":"…","message":"…","code":"�
 | `stop_sequences` | ✅ | 映射为 OpenAI `stop` |
 | `system`（字符串或文本块数组） | ✅ | |
 | `cache_control` | ❌ | 上游无 prompt caching，字段被忽略 |
+| `tools` 含 `{"type":"web_search_20250305"}` | ✅ | 网关代执行检索后注入 `system`；`max_uses` / `allowed_domains` 不生效 |
+| 其它服务端工具（`computer_20241022` / `bash_20241022` / `text_editor_*`） | ❌ | 400 `unsupported_parameter`（以前会被误当 function 转发，模型照着幻觉调用） |
 
 > 为什么 signature 重要：Claude Code / 官方 SDK 在多轮回传 assistant 内容时
 > 会校验 thinking 块的 signature，缺失会让**第二轮**直接 400 ——

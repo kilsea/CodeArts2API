@@ -18,6 +18,7 @@
 - 🔁 **每日自动领取活动福利** —— 定时领取运营活动奖励（如「每日签到领 1000 积分」），IDE 没开 / 跨天 / 多账号都不漏
 - 🔐 **三种凭据来源** —— 桌面端登录态导入 / 本地浏览器登录（OAuth 回调）/ 手工录入
 - 🔌 **三套协议** —— `/v1/chat/completions`（OpenAI）+ `/v1/responses`（OpenAI Responses，含 `previous_response_id`）+ `/v1/messages`（Anthropic），均含思维链与工具调用
+- 🔎 **可选的联网搜索** —— 上游不支持内置 `web_search`，网关用自托管 SearXNG（或 Tavily / Brave）代执行，Chat / Responses / Anthropic 三条协议都能透明使用（[docs/WEBSEARCH.md](docs/WEBSEARCH.md)）
 - 🖥️ **内嵌 Web 控制台** —— 账号池 / 密钥 / 日志 / 模型清单与积分倍率一目了然
 
 ```text
@@ -104,6 +105,7 @@ curl http://127.0.0.1:10087/v1/responses \
 | `-export-session` | — | 把本机登录态导出为 session JSON（路径，或 `-` 输出到 stdout）后退出 |
 | `-no-import` | — | 启动时不自动导入 |
 | `-no-refresh` | — | 禁止网关自行续期（只读 IDE 会话） |
+| `-models-sync` | `CODEARTS_MODELS_SYNC` | 定时同步上游模型清单的间隔（如 `6h` / `30m`；`0` 关闭周期同步，默认 `6h`） |
 | — | `CODEARTS_DUMP_DIR` | 调试采样目录（默认 `<状态文件目录>/samples`） |
 | — | `CODEARTS_DUMP_SAMPLE` | 调试采样的**启动初值**（`1`=全采，`100`=1%）；运行期间以控制台开关为准 |
 
@@ -274,6 +276,11 @@ curl ... -d '{"model":"glm-5.3","messages":[...],"stream":true}'  # 原生流式
 
 `channel` 恒为 `credit`（免费权益通道已下线），保留该字段只是为了兼容既有客户端。
 
+清单**不需要手动维护**：启动时同步一次，之后按 `-models-sync`（默认 6 小时）在后台定时刷新，
+上游增删模型后不用重启。刷新失败会保留现有清单，控制台在模型区显示「最近一次上游刷新失败」，
+并每 10 分钟的 `/v1/models` 请求顺带补一次；成功时显示「清单同步于 …，每 6 小时自动同步」。
+控制台的「一键刷新」按钮不受间隔限制，随时可以强制同步。
+
 ---
 
 ## 三、凭据与续期
@@ -329,7 +336,7 @@ codearts2api.exe -export-session D:\codearts-session.json
 # 2) 命令行，直接输出（方便管道）
 codearts2api.exe -export-session - > codearts-session.json
 
-# 3) 控制台：账号页 → 该账号的「导出」按钮（弹窗里可一键复制）
+# 3) 控制台：账号页 → 该账号的「⋯」→「导出 session」（弹窗里可一键复制）
 ```
 
 导出内容就是 IDE 存的那份 session，字段齐全：
@@ -483,7 +490,7 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 <http://127.0.0.1:10087/>，三个内嵌文件（HTML + CSS + JS）、无外部依赖、可离线使用。
 
 - **概览**：请求统计、今日领取 n/m、**活动福利列表与邀请链接（可按账号切换查看）**、模型清单（含积分倍率与**逐模型测活**）、一键刷新模型、**用量趋势（最近 7/14/30 天，按天柱状图 + 按模型汇总）**
-- **账号**：导入 / **浏览器登录** / 手工录入 / 从 session JSON 导入 / **导出 session JSON** / 探活 / **领取活动福利** / 重读 / 启停 / 删除，AK 与域 ID 脱敏展示，并显示「今日领取」状态；**备注**可记录账号所属手机号，方便换绑 / 重新登录时对号
+- **账号**：导入 / **浏览器登录** / 手工录入 / 从 session JSON 导入；每行保留两个常用操作（探活、领福利），其余（导出 session / 重读登录态 / 备注 / 启停 / 清错 / 删除）收在行尾「⋯」菜单里。AK 与域 ID 脱敏展示，并显示「今日领取」状态；**备注**可记录账号所属手机号，方便换绑 / 重新登录时对号
 - **密钥**：签发 `sk-ca-...` 调用密钥（未签发时 `/v1/*` **仅允许本机直连**）；
   顶部一行「API 端点」直接给出 `<当前地址>/v1`（点击即全选），可一键复制、或跳到 tcptest.cn 做在线测速
 - **日志**：只记元信息（模型、耗时、入出长度），不落对话内容，**最新在上**；
@@ -521,6 +528,7 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 | POST | `/v1/messages/count_tokens` | Anthropic token 计数（本地估算，不打上游、不扣积分） |
 | POST | `/v1/responses` | OpenAI Responses API 兼容（流式事件流 / `tools` / `previous_response_id`） |
 | POST | `/v1/responses/input_tokens` | 输入 token 估算（本地计算，不打上游、不扣积分） |
+| POST/GET | `/v1/search` | **网关自建的联网检索**（Tavily 形状；SearXNG / Tavily / Brave 三选一，见 [docs/WEBSEARCH.md](docs/WEBSEARCH.md)） |
 | GET/DELETE | `/v1/responses/{id}` | 查询 / 删除已保存的响应（仅内存，TTL 1 小时） |
 | GET | `/v1/responses/{id}/input_items` | 读取该响应的输入条目 |
 | GET | `/metrics` | Prometheus 文本格式运行指标（与管理接口同一套鉴权） |
@@ -541,6 +549,7 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 | GET/POST | `/admin/api/settings` | 运行设置 |
 | POST | `/admin/api/checkin` | 账号连通性探活（用默认模型发一次 `max_tokens=8`，消耗极少积分） |
 | GET | `/admin/api/credits` | **账号积分额度**（套餐总额 / 已用 / 剩余 / 到期）。可选 `?id=<账号>` 只查一个、`?fresh=1` 跳过 60 秒缓存；不消耗积分 |
+| POST | `/admin/api/websearch/test` | 联网搜索联通性测试（用配置的后端真实搜一次） |
 | POST | `/admin/api/models/probe` | **逐模型测活**：对每个模型发一次 `max_tokens=8` 的真实请求（**真实扣积分**）。可选 `{"models":[...],"id":"<账号>"}`；单次上限 64 个模型，同一时刻只允许一个测活任务（并发时返回 `409`） |
 | POST | `/admin/api/claim` | **领取活动福利**：运营活动奖励（全部账号或指定 `id`；免费福利 Token 已随通道下线移除） |
 | GET | `/admin/api/welfare` | 运营活动清单与可领取状态（**按账号查询**：`?id=<账号>`；响应带 `accounts` 列表与 `claimable_count`，不带 `id` 时取调度池的下一个账号） |
@@ -554,6 +563,30 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 上游返回的 `reasoning_content`（思维链）会原样透传，
 OpenAI 侧在 `choices[].message.reasoning_content` / `delta.reasoning_content`，
 Anthropic 侧映射为 `thinking` 内容块。
+
+### 5.1 联网搜索（可选，默认关闭）
+
+上游**没有**内置搜索能力（`tools:[{"type":"web_search"}]` 实测被 406 `Tool type is invalid` 拒掉），
+所以联网由网关代执行：检索 → 抓正文 → 注入 `system` → 摘掉该工具再转发上游。
+
+```bash
+# 1) 起一个 SearXNG（compose 里已带，默认不启动）
+docker compose --profile search up -d
+
+# 2) 控制台「设置 → 联网搜索」填端点 http://searxng:8080 并勾选启用
+
+# 3) 客户端直接声明内置工具即可
+curl -s http://127.0.0.1:10087/v1/chat/completions   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"   -d '{"model":"glm-5.3","messages":[{"role":"user","content":"杭州今天天气"}],
+       "tools":[{"type":"web_search"}]}'
+```
+
+响应头 `X-Gateway-Web-Search` 会写明这次真的搜了（后端 / 条数 / 耗时）。
+也可以直接调 `POST /v1/search`（Tavily 形状）。SearXNG 的 `settings.yml` 必须开
+`search.formats: [html, json]` 并关掉 `limiter`，细节与排障见
+[docs/WEBSEARCH.md](docs/WEBSEARCH.md)。
+
+> 网关未启用时，带内置搜索工具的请求返回 `400 websearch_disabled` ——
+> 不会静默摘掉工具让模型「假装查过了」。
 
 ### 错误语义
 

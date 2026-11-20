@@ -41,6 +41,7 @@ func main() {
 		port       = flag.Int("port", envInt("CODEARTS_PORT", 10087), "监听端口")
 		dataPath   = flag.String("data", envOr("CODEARTS_DATA_PATH", ""), "状态文件路径（默认在可执行文件同目录）")
 		userData   = flag.String("user-data", envOr("CODEARTS_USER_DATA", ""), "CodeArts Agent 的 User Data 目录（留空自动探测）")
+		modelsSync = flag.Duration("models-sync", envDur("CODEARTS_MODELS_SYNC", 6*time.Hour), "定时同步上游模型清单的间隔（如 6h / 30m，0 关闭周期性同步）")
 		importOnly = flag.Bool("import", false, "仅执行一次桌面端凭据导入后退出")
 		exportPath = flag.String("export-session", "", "把本机登录态导出为 session JSON（路径，或用 - 输出到 stdout）后退出")
 		noImport   = flag.Bool("no-import", false, "启动时不自动导入桌面端登录态")
@@ -126,6 +127,8 @@ func main() {
 	defer stopBG()
 	srv.StartClaimLoop(bgCtx)
 	srv.StartCreditLoop(bgCtx)
+	// 模型清单低频同步：上游增删模型后不用重启，也不用每次请求去拉。
+	srv.StartModelSyncLoop(bgCtx, *modelsSync)
 
 	// 统计/用量的延迟落盘：Record 只改内存，这里每 30 秒把脏状态刷一次。
 	// 不刷的话重启后「今日请求数」「用量趋势」会归零。
@@ -314,6 +317,16 @@ func envInt(key string, def int) int {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+// envDur 读取时长环境变量（Go 语法：6h、30m、90s）。
+func envDur(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil {
+			return d
 		}
 	}
 	return def

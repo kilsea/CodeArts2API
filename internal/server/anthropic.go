@@ -75,10 +75,25 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		writeAnthropicErr(w, http.StatusForbidden, "invalid_request_error", msg)
 		return
 	}
+	// 联网搜索 / 服务端工具：web_search 由网关代执行，其余服务端工具显式拒绝。
+	search, serr := s.applyAnthropicWebSearch(r.Context(), &req)
+	if serr != nil {
+		s.record(requestID(r.Context()), extractKey(r), nil, model.ID, req.Stream,
+			apierr.From(serr).Status, start, 0, 0, 0, serr)
+		writeAPIErr(w, errAnthropic, serr)
+		return
+	}
+
 	upReq, err := protocol.ToOpenAI(&req, model.ID)
 	if err != nil {
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
+	}
+	if search != nil {
+		if msgs, ok := upReq["messages"].([]map[string]any); ok {
+			upReq["messages"] = prependSystemMap(msgs, search.block)
+			w.Header().Set("X-Gateway-Web-Search", search.info)
+		}
 	}
 	upBody, err := json.Marshal(upReq)
 	if err != nil {

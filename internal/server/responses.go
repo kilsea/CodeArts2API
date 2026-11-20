@@ -82,6 +82,15 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		prefix = entry.Messages
 	}
 
+	// 联网搜索（Responses 的 {"type":"web_search"}）：网关代执行。
+	search, serr := s.applyResponsesWebSearch(r.Context(), &req)
+	if serr != nil {
+		s.record(requestID(r.Context()), extractKey(r), nil, model.ID, req.Stream,
+			apierr.From(serr).Status, start, 0, 0, 0, serr)
+		writeAPIErr(w, errOpenAI, serr)
+		return
+	}
+
 	upReq, dropped, err := protocol.ToChatRequest(&req, model.ID, prefix)
 	if err != nil {
 		err = responsesParamErr(err)
@@ -89,6 +98,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			apierr.From(err).Status, start, 0, 0, 0, err)
 		writeAPIErr(w, errOpenAI, err)
 		return
+	}
+	if search != nil {
+		if msgs, ok := upReq["messages"].([]map[string]any); ok {
+			upReq["messages"] = prependSystemMap(msgs, search.block)
+			w.Header().Set("X-Gateway-Web-Search", search.info)
+		}
 	}
 	upBody, err := json.Marshal(upReq)
 	if err != nil {

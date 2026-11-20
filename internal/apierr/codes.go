@@ -48,6 +48,11 @@ const (
 	CodePreviousResponseNotFound = "previous_response_not_found"
 	// CodeResponseNotFound 表示按 id 查询 / 删除一个不存在的响应。
 	CodeResponseNotFound = "not_found"
+	// CodeWebSearchDisabled 表示客户端要用内置联网搜索，但网关没开启 / 没配置后端。
+	CodeWebSearchDisabled = "websearch_disabled"
+	// CodeWebSearchFailed 表示检索后端失败（SearXNG 不可达、Tavily 额度用尽 …）。
+	// 由 internal/websearch.Error 自己声明；这里是文档与测试用的同一份口径。
+	CodeWebSearchFailed = "websearch_failed"
 )
 
 // Coder 由「能说清自己该归到哪个规范错误码」的错误类型实现。

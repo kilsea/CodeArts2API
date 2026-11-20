@@ -546,6 +546,9 @@ tbody td{transition:background-color .12s ease}
 tbody tr:hover td{background:var(--surface-2)}
 td.actions-cell{display:table-cell;white-space:nowrap}
 td.actions-cell > .btn + .btn{margin-left:4px}
+/* 行内按钮默认 baseline 对齐：纯图标按钮（⋯）没有文字基线，会被抬高一两像素，
+   看着就跟旁边「探活」「领福利」不在一条线上。统成垂直居中。 */
+td.actions-cell > *{vertical-align:middle}
 td.empty{
   padding:30px 12px;
   text-align:center;
@@ -580,6 +583,56 @@ td.cell-stack > *[hidden]{display:none}
 }
 .muted{color:var(--text-3)}
 .trunc{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ===== 行内「更多」菜单 =================================================
+   菜单挂在 body 上、fixed 定位（坐标由 JS 算），因为表格容器是
+   overflow-x:auto，绝对定位的下拉会被裁掉。 */
+.row-menu{
+  position:fixed;
+  z-index:60;
+  min-width:148px;
+  padding:5px;
+  display:flex;
+  flex-direction:column;
+  gap:1px;
+  background:var(--surface-2);
+  border:1px solid var(--line-2);
+  border-radius:var(--r-md);
+  box-shadow:var(--pop);
+  animation:menuIn .1s ease both;
+}
+@keyframes menuIn{
+  from{opacity:0;transform:translateY(-4px)}
+  to{opacity:1;transform:none}
+}
+.row-menu .mi{
+  display:block;
+  width:100%;
+  padding:7px 10px;
+  border:0;
+  border-radius:var(--r-xs);
+  background:transparent;
+  color:var(--text-2);
+  font:inherit;
+  font-size:13px;
+  text-align:left;
+  white-space:nowrap;
+  cursor:pointer;
+}
+.row-menu .mi:hover,
+.row-menu .mi:focus-visible{background:var(--surface-3);color:var(--text);outline:none}
+.row-menu .mi.danger{color:var(--err)}
+.row-menu .mi.danger:hover,
+.row-menu .mi.danger:focus-visible{background:var(--err-soft);color:var(--err)}
+.row-menu .sep{height:1px;margin:4px 6px;background:var(--line)}
+
+/* 三个点的图标比常规 .ico 粗一点，否则缩小后看着像虚点 */
+.btn.menu-btn{
+  width:28px;
+  padding:0;
+  justify-content:center;
+}
+.btn.menu-btn .ico{width:15px;height:15px;stroke-width:2.6}
 
 /* 采样详情：请求体可能很长，限制高度并允许滚动，避免把整张表撑开。 */
 .sample-body{

@@ -7,6 +7,15 @@ import (
 	"codearts2api/internal/codearts"
 )
 
+// coderCode 取错误自己声明的规范码（不认识的错误返回空）。
+func coderCode(err error) string {
+	var c Coder
+	if errors.As(err, &c) {
+		return c.APICode()
+	}
+	return ""
+}
+
 // Classify 把内部错误归为一个简短标签，用于请求日志的分类统计与控制台展示。
 //
 // 标签含义：
@@ -74,6 +83,11 @@ func Classify(err error) string {
 	var rl *RateLimited
 	if errors.As(err, &rl) {
 		return "rate_limited"
+	}
+	// 检索后端失败（SearXNG 挂 / 额度用尽）：与上游无关，但对外同样是 502。
+	// 单独成类，控制台按「联网搜索」筛选时不会和上游故障混在一起。
+	if code := coderCode(err); code == CodeWebSearchFailed {
+		return "websearch"
 	}
 	var busy *AccountBusy
 	if errors.As(err, &busy) {

@@ -108,6 +108,23 @@ type Settings struct {
 	IDEName       string `json:"ide_name"`
 	IDEVersion    string `json:"ide_version"`
 	Language      string `json:"language"`
+
+	// 联网搜索（Web Search）。
+	//
+	// 上游只认 type=function 工具（type=web_search 会被 406 拒掉），
+	// 因此网关必须自己检索：SearXNG（自托管）/ Tavily / Brave 三选一。
+	// 关闭时给带 web_search 工具的请求返回 400，绝不静默跳过检索
+	// —— 那会让用户以为模型「查过了」。
+	WebSearchEnabled  bool   `json:"websearch_enabled"`
+	WebSearchProvider string `json:"websearch_provider"`
+	WebSearchEndpoint string `json:"websearch_endpoint"`
+	// WebSearchAPIKey 只在 Tavily / Brave 时需要；SearXNG 留空。
+	WebSearchAPIKey       string `json:"websearch_api_key"`
+	WebSearchMaxResults   int    `json:"websearch_max_results"`
+	WebSearchTimeout      int    `json:"websearch_timeout_sec"`
+	WebSearchFetchPages   bool   `json:"websearch_fetch_pages"`
+	WebSearchMaxPageChars int    `json:"websearch_max_page_chars"`
+	WebSearchCacheTTL     int    `json:"websearch_cache_ttl_sec"`
 }
 
 // LogEntry 是一条请求日志（只记元信息，不落对话内容）。

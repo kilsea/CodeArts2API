@@ -14,6 +14,7 @@ import (
 	"codearts2api/internal/codearts"
 	"codearts2api/internal/registry"
 	"codearts2api/internal/store"
+	"codearts2api/internal/websearch"
 )
 
 // handleAdminState 返回控制台首屏所需的全部状态。
@@ -60,22 +61,29 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var cacheErr string
+	var modelsLoadedAt int64
 	// cache 由 New 初始化；测试会直接构造 &Server{}，不能假设它存在。
 	if s.cache != nil {
-		s.cache.mu.RLock()
-		cacheErr = s.cache.err
-		s.cache.mu.RUnlock()
+		if at, e := s.cache.status(); !at.IsZero() {
+			modelsLoadedAt = at.Unix()
+			cacheErr = e
+		} else {
+			cacheErr = e
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"today":          today,
-		"accounts":       safe,
-		"keys":           safeKeys,
-		"models":         s.Reg.List(s.Store.Settings().ModelAliases),
-		"settings":       sanitizedSettings(s.Store.Settings()),
-		"stats":          s.Store.Stats(),
-		"build":          buildInfo(),
-		"upstream_error": cacheErr,
+		"today":            today,
+		"accounts":         safe,
+		"keys":             safeKeys,
+		"models":           s.Reg.List(s.Store.Settings().ModelAliases),
+		"settings":         sanitizedSettings(s.Store.Settings()),
+		"stats":            s.Store.Stats(),
+		"build":            buildInfo(),
+		"upstream_error":   cacheErr,
+		"models_loaded_at": modelsLoadedAt,
+		// 定时同步间隔（秒），0 = 关闭；控制台据此显示「每 N 小时自动同步」。
+		"models_sync_seconds": s.modelSyncEvery.Load(),
 	})
 }
 
@@ -433,10 +441,60 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		Language          *string           `json:"language"`
 		DebugCapture      *bool             `json:"debug_capture"`
 		DebugCaptureRate  *int              `json:"debug_capture_sample"`
+
+		// 联网搜索
+		WebSearchEnabled   *bool   `json:"websearch_enabled"`
+		WebSearchProvider  *string `json:"websearch_provider"`
+		WebSearchEndpoint  *string `json:"websearch_endpoint"`
+		WebSearchAPIKey    *string `json:"websearch_api_key"`
+		WebSearchClearKey  *bool   `json:"clear_websearch_api_key"`
+		WebSearchMaxResult *int    `json:"websearch_max_results"`
+		WebSearchTimeout   *int    `json:"websearch_timeout_sec"`
+		WebSearchFetch     *bool   `json:"websearch_fetch_pages"`
+		WebSearchPageChars *int    `json:"websearch_max_page_chars"`
+		WebSearchCacheTTL  *int    `json:"websearch_cache_ttl_sec"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return
+	}
+	// 联网搜索先校验再落盘：写错后端名/端点如果静默回落，
+	// 「我明明切到 Tavily 了」就会变成一个查不出原因的怪现象。
+	if body.WebSearchProvider != nil {
+		p := strings.ToLower(strings.TrimSpace(*body.WebSearchProvider))
+		switch p {
+		case websearch.ProviderSearxng, websearch.ProviderTavily, websearch.ProviderBrave:
+			*body.WebSearchProvider = p
+		default:
+			writeErr(w, http.StatusBadRequest,
+				"websearch_provider 只支持 searxng / tavily / brave", "invalid_value")
+			return
+		}
+	}
+	if body.WebSearchEndpoint != nil {
+		e := strings.TrimSpace(*body.WebSearchEndpoint)
+		if e != "" && !strings.HasPrefix(e, "http://") && !strings.HasPrefix(e, "https://") {
+			writeErr(w, http.StatusBadRequest, "websearch_endpoint 必须以 http:// 或 https:// 开头", "invalid_value")
+			return
+		}
+		*body.WebSearchEndpoint = e
+	}
+	for _, r := range []struct {
+		name string
+		v    *int
+		min  int
+		max  int
+	}{
+		{"websearch_max_results", body.WebSearchMaxResult, 1, 10},
+		{"websearch_timeout_sec", body.WebSearchTimeout, 1, 60},
+		{"websearch_max_page_chars", body.WebSearchPageChars, 0, 20000},
+		{"websearch_cache_ttl_sec", body.WebSearchCacheTTL, 0, 86400},
+	} {
+		if r.v != nil && (*r.v < r.min || *r.v > r.max) {
+			writeErr(w, http.StatusBadRequest,
+				fmt.Sprintf("%s 取值范围 %d-%d", r.name, r.min, r.max), "invalid_value")
+			return
+		}
 	}
 	s.Store.UpdateSettings(func(st *store.Settings) {
 		if body.ModelAliases != nil {
@@ -482,6 +540,24 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		} else if body.AdminPassword != nil {
 			if v := strings.TrimSpace(*body.AdminPassword); v != "" {
 				st.AdminPassword = v
+			}
+		}
+
+		setIf(&st.WebSearchEnabled, body.WebSearchEnabled)
+		setIf(&st.WebSearchProvider, body.WebSearchProvider)
+		setIf(&st.WebSearchEndpoint, body.WebSearchEndpoint)
+		setIf(&st.WebSearchMaxResults, body.WebSearchMaxResult)
+		setIf(&st.WebSearchTimeout, body.WebSearchTimeout)
+		setIf(&st.WebSearchFetchPages, body.WebSearchFetch)
+		setIf(&st.WebSearchMaxPageChars, body.WebSearchPageChars)
+		setIf(&st.WebSearchCacheTTL, body.WebSearchCacheTTL)
+		// API Key 与管理员密码同一策略：留空表示「不修改」，清空必须显式声明，
+		// 否则前端每次保存设置都会把密钥抹掉。
+		if body.WebSearchClearKey != nil && *body.WebSearchClearKey {
+			st.WebSearchAPIKey = ""
+		} else if body.WebSearchAPIKey != nil {
+			if v := strings.TrimSpace(*body.WebSearchAPIKey); v != "" {
+				st.WebSearchAPIKey = v
 			}
 		}
 	})

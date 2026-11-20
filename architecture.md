@@ -20,10 +20,11 @@ parent: goal
 | `codearts` | 上游复刻层：凭据、签名、请求、续期、活动 | — |
 | `protocol` | Anthropic ↔ OpenAI 纯数据转换 | — |
 | `ratelimit` | 按密钥的令牌桶 + 在飞并发闸门 | — |
+| `websearch` | 联网检索后端（SearXNG / Tavily / Brave）+ SSRF 安全的正文抓取 | — |
 | `apierr` | 内部错误 → 对外状态码与两套 error.type | `codearts` |
 | `store` | 状态持久化与账号池调度 | `codearts` |
 | `registry` | 模型清单与别名解析 | `codearts` |
-| `server` | HTTP 兼容层 + 控制台；**唯一的组合根** | `apierr` `codearts` `protocol` `ratelimit` `registry` `store` |
+| `server` | HTTP 兼容层 + 控制台；**唯一的组合根** | `apierr` `codearts` `protocol` `ratelimit` `registry` `store` `websearch` |
 | `main` | 命令行、启动编排、信号处理 | `codearts` `server` `store` |
 | `cmd/probe` | 本机诊断工具 | `codearts` |
 
@@ -31,8 +32,9 @@ parent: goal
 
 代码已经这样长，改架构时别破坏：
 
-1. **`codearts`、`protocol`、`ratelimit` 不依赖任何内部包。** 三者都能脱离网关单测 ——
-   前者是上游复刻，后两者是纯逻辑。任何「顺手 import 一下 store」都会毁掉这条。
+1. **`codearts`、`protocol`、`ratelimit`、`websearch` 不依赖任何内部包。**
+   四者都能脱离网关单测 —— 前两者是上游复刻与纯转换，后两者是纯逻辑 / HTTP 客户端。
+   任何「顺手 import 一下 store」都会毁掉这条。
 2. **`server` 是唯一的组合根。** 只有它同时依赖四个下层包。下层之间不互相认识。
 3. **对外错误只有一个映射点**：`apierr.From` 决定状态码与两套 `error.type`。
    请求处理器不得自己拼状态码表 —— 改一处漏一处是这类表的天敌。
