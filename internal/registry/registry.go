@@ -49,11 +49,20 @@ var Fallback = []Model{
 		Desc: "编程性能突出"},
 }
 
-// aliases 是内置别名，指向 CodeArts 上游模型 ID。
+// legacyAliases 是「旧客户端兼容别名」，指向 CodeArts 上游模型 ID。
 //
 // 2026-10 免费通道下线后，原来的 glm-5.3-flash / deepseek-v4-pro-0813 /
 // deepseek-v4-flash-0731 都不存在了，这里统一重映射到当前可用的积分模型。
-var aliases = map[string]string{
+//
+// **默认不生效**：`gpt-4o` 实际由 GLM 回答、`claude-sonnet-4` 实际由 GLM-5.2
+// 回答，用户以为在用 A 实际在跑 B 并真实扣积分 —— 这是「静默烧钱」，
+// 与 README「无法识别的模型名直接返回 404」的承诺相反。
+// 现在它们只在控制台显式打开「兼容别名」后生效（store.Settings.ModelFallback），
+// 且每次命中都会回写 X-Gateway-Model-Fallback 响应头并记一条告警日志。
+//
+// 想要长期使用这些名字，请改在设置里配 model_aliases（自定义别名），
+// 那是用户显式声明过的映射，不需要任何「回落」语义。
+var legacyAliases = map[string]string{
 	// 通用档 → glm-5.3
 	"gpt-4o":            "glm-5.3",
 	"gpt-4o-mini":       "glm-5.3",
@@ -71,6 +80,16 @@ var aliases = map[string]string{
 	"claude-3-5-sonnet": "GLM-5.2",
 	"claude-sonnet-4":   "GLM-5.2",
 	"codearts-pro":      "GLM-5.2",
+}
+
+// LegacyAliasNames 返回全部内置兼容别名的名字（升序），供文档与控制台展示。
+func LegacyAliasNames() []string {
+	out := make([]string, 0, len(legacyAliases))
+	for k := range legacyAliases {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Registry 是可热更新的模型清单。
@@ -159,11 +178,13 @@ func (r *Registry) Updated() time.Time {
 	return r.updated
 }
 
-// Resolve 把用户传入的模型名解析为上游模型 ID。
+// Resolve 把用户传入的模型名解析为上游模型。
 //
-// 依次尝试：精确 ID → 自定义别名 → 内置别名 → 大小写无关匹配。
+// 依次尝试：精确 ID → 自定义别名 → 大小写无关匹配。
 // 全部失败时返回 false —— 调用方必须报错，**绝不静默落到别的模型**：
 // 现在每个模型都真实扣积分，猜错模型等于替用户乱花钱。
+//
+// 内置的 legacyAliases 不在这里解析，见 ResolveLegacy。
 func (r *Registry) Resolve(name string, custom map[string]string) (Model, bool) {
 	r.mu.RLock()
 	base := append([]Model(nil), r.models...)
@@ -179,13 +200,30 @@ func (r *Registry) Resolve(name string, custom map[string]string) (Model, bool) 
 	if target, ok := custom[n]; ok {
 		return aliasModel(base, target)
 	}
-	if target, ok := aliases[strings.ToLower(n)]; ok {
-		return aliasModel(base, target)
-	}
 	for _, m := range base {
 		if strings.EqualFold(m.ID, n) {
 			return m, true
 		}
+	}
+	return Model{}, false
+}
+
+// ResolveLegacy 解析内置兼容别名（gpt-4o → glm-5.3 等）。
+//
+// **只在设置里显式打开 ModelFallback 时才能被调用**：这些名字会让用户
+// 以为在用 A 模型，实际跑的是 B 模型并真实扣积分。调用方必须把命中结果
+// 回写到响应头 X-Gateway-Model-Fallback 并记告警日志，不能静默生效。
+func (r *Registry) ResolveLegacy(name string, custom map[string]string) (Model, bool) {
+	r.mu.RLock()
+	base := append([]Model(nil), r.models...)
+	r.mu.RUnlock()
+
+	// 自定义别名优先：用户显式配的映射比内置兼容表更权威。
+	if target, ok := custom[strings.TrimSpace(name)]; ok {
+		return aliasModel(base, target)
+	}
+	if target, ok := legacyAliases[strings.ToLower(strings.TrimSpace(name))]; ok {
+		return aliasModel(base, target)
 	}
 	return Model{}, false
 }

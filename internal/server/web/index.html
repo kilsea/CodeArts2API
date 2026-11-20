@@ -468,6 +468,12 @@
                 <span class="check-hint">免费权益通道已下线，所有模型都会计费。关闭它等于拒绝一切 <code>/v1/*</code> 模型调用（403），只在临时停服/排障时使用。</span>
               </span>
             </label>
+            <label class="check" for="sModelFallback">
+              <input type="checkbox" id="sModelFallback">
+              <span>启用兼容别名（gpt-4o → GLM 等）
+                <span class="check-hint">默认关闭：请求 <code>gpt-4o</code> 等非真实模型名一律返回 <code>404 model_not_found</code>，绝不静默换模型。打开后这些名字会被映射到真实模型，<strong>每次命中都会回写响应头</strong> <code>X-Gateway-Model-Fallback</code> 并记一条告警日志 —— 客户端以为自己换了模型、其实只是换了个名字。要长期使用，请改配「模型别名」。</span>
+              </span>
+            </label>
           </div>
 
           <div class="settings-group">

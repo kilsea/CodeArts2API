@@ -558,6 +558,7 @@
     $("#sUserData").value = s.user_data_dir || "";
     $("#sLoginPort").value = s.login_port || 0;
     $("#sAllowCredit").checked = !!s.allow_credit_models;
+    $("#sModelFallback").checked = !!s.model_fallback;
     $("#sCreditPriority").checked = (s.credit_priority === undefined ? true : !!s.credit_priority);
     $("#sAllowAnonymous").checked = !!s.allow_anonymous;
     $("#sRateLimit").checked = !!s.rate_limit_enabled;
@@ -1070,6 +1071,7 @@
       user_data_dir: $("#sUserData").value.trim(),
       login_port: parseInt($("#sLoginPort").value, 10) || 0,
       allow_credit_models: $("#sAllowCredit").checked,
+      model_fallback: $("#sModelFallback").checked,
       credit_priority: $("#sCreditPriority").checked,
       allow_anonymous: $("#sAllowAnonymous").checked,
       rate_limit_enabled: $("#sRateLimit").checked,

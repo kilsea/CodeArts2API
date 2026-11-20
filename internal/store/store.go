@@ -48,6 +48,14 @@ type Settings struct {
 	// 这个端口的所有人，仅在你确定端口没有对外暴露时才开启。
 	AllowAnonymous bool `json:"allow_anonymous"`
 
+	// ModelFallback 允许内置兼容别名（gpt-4o / claude-sonnet-4 …）。
+	//
+	// 默认关闭：这些名字指向的并不是同名模型，`gpt-4o` 实际由 GLM 回答，
+	// 且真实扣积分 —— 客户端以为自己换了模型，其实只是换了个名字。
+	// 打开后每次命中都会回写响应头 X-Gateway-Model-Fallback 并记一条告警日志，
+	// 保证「谁被换成了什么」永远可见。要长期用这些名字，请改配 model_aliases。
+	ModelFallback bool `json:"model_fallback"`
+
 	// RateLimitEnabled 开启按密钥的自我保护型限流。
 	//
 	// 定位见 goal 的「非目标」：只防止失控客户端烧光积分，
@@ -90,7 +98,9 @@ type Settings struct {
 
 // LogEntry 是一条请求日志（只记元信息，不落对话内容）。
 type LogEntry struct {
-	Time      int64  `json:"time"`
+	Time int64 `json:"time"`
+	// RequestID 与响应头 X-Request-Id 同值：客户端贴一个 id 就能定位到这一条。
+	RequestID string `json:"request_id,omitempty"`
 	Key       string `json:"key"`
 	Account   string `json:"account"`
 	Model     string `json:"model"`

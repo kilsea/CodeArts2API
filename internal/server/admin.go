@@ -344,6 +344,7 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		ClearPassword     *bool             `json:"clear_admin_password"`
 		AutoRefresh       *bool             `json:"auto_refresh"`
 		AllowCreditModels *bool             `json:"allow_credit_models"`
+		ModelFallback     *bool             `json:"model_fallback"`
 		AllowAnonymous    *bool             `json:"allow_anonymous"`
 		CreditPriority    *bool             `json:"credit_priority"`
 		RateLimitEnabled  *bool             `json:"rate_limit_enabled"`
@@ -376,6 +377,7 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		setIf(&st.CORSOrigin, body.CORSOrigin)
 		setIf(&st.AutoRefresh, body.AutoRefresh)
 		setIf(&st.AllowCreditModels, body.AllowCreditModels)
+		setIf(&st.ModelFallback, body.ModelFallback)
 		setIf(&st.AllowAnonymous, body.AllowAnonymous)
 		setIf(&st.CreditPriority, body.CreditPriority)
 		setIf(&st.RateLimitEnabled, body.RateLimitEnabled)

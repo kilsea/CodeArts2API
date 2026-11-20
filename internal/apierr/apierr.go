@@ -45,6 +45,12 @@ func (e *ModelNotFound) Error() string {
 	return msg
 }
 
+// APICode 实现 Coder。
+func (e *ModelNotFound) APICode() string { return CodeModelNotFound }
+
+// APIParam 实现 Coder。
+func (e *ModelNotFound) APIParam() string { return "model" }
+
 // RateLimited 表示**网关侧**的限流拦截。
 //
 // 必须与上游 429 区分开：上游 429 是「账号的并发会话满了，换个时机或换个账号再试」，
@@ -72,6 +78,13 @@ type Error struct {
 	OpenAI string
 	// Anthropic 是 Anthropic 风格的 error.type。
 	Anthropic string
+	// Code 是规范错误码（见 codes.go 常量），可空。
+	Code string
+	// Param 是出错参数在请求体里的路径（如 "messages[3].role"），可空。
+	Param string
+	// Upstream 是上游原始错误原文：仅当 Code 映射不出来时才填，
+	// 让客户端至少能看到上游说了什么，而不是一句笼统的 upstream_error。
+	Upstream string
 }
 
 // From 把内部错误映射为对外表述。
@@ -98,11 +111,22 @@ func From(err error) Error {
 	}
 	var mnf *ModelNotFound
 	if errors.As(err, &mnf) {
-		return Error{Status: http.StatusNotFound, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}
+		return coded(Error{Status: http.StatusNotFound, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}, err)
 	}
 	var rl *RateLimited
 	if errors.As(err, &rl) {
-		return Error{Status: http.StatusTooManyRequests, OpenAI: "rate_limit_error", Anthropic: "rate_limit_error"}
+		return coded(Error{Status: http.StatusTooManyRequests, OpenAI: "rate_limit_error", Anthropic: "rate_limit_error", Code: CodeRateLimited}, err)
+	}
+	// 请求结构本身不合法（role 不认识 / messages 形状不对）：这是纯粹的客户端问题，
+	// 必须在触达上游之前就报 400，而不是先打一次上游再把它当成上游故障（502）。
+	var ire *InvalidRoleError
+	if errors.As(err, &ire) {
+		return coded(Error{Status: http.StatusBadRequest, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}, err)
+	}
+	// 参数越界 / 类型不对 / 不受支持：同样是纯粹的客户端问题。
+	var ipe *InvalidParamError
+	if errors.As(err, &ipe) {
+		return coded(Error{Status: http.StatusBadRequest, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}, err)
 	}
 
 	var ue *codearts.UpstreamError
@@ -110,29 +134,84 @@ func From(err error) Error {
 		// 凭据不可用、网络错误等：都归为网关侧问题（502），
 		// 但凭据失效要给客户端一个「别重试、去登录」的明确信号。
 		if codearts.IsCredentialsError(err) {
-			return Error{Status: http.StatusBadGateway, OpenAI: "credentials_error", Anthropic: "authentication_error"}
+			return coded(Error{Status: http.StatusBadGateway, OpenAI: "credentials_error", Anthropic: "authentication_error", Code: CodeCredentials}, err)
 		}
-		return Error{Status: http.StatusBadGateway, OpenAI: "upstream_error", Anthropic: "overloaded_error"}
+		return coded(Error{Status: http.StatusBadGateway, OpenAI: "upstream_error", Anthropic: "overloaded_error", Code: CodeUpstream}, err)
 	}
 
+	var out Error
 	switch {
 	case codearts.IsTransientUpstream(err):
 		// 上游 5xx 用 502；并发上限（上游用 400 表达）与 429 用 429，
 		// 让客户端知道「等一会再试」而不是「请求错了」。
 		if ue.Status >= 500 {
-			return Error{Status: http.StatusBadGateway, OpenAI: "upstream_error", Anthropic: "overloaded_error"}
+			out = Error{Status: http.StatusBadGateway, OpenAI: "upstream_error", Anthropic: "overloaded_error"}
+		} else {
+			out = Error{Status: http.StatusTooManyRequests, OpenAI: "rate_limit_error", Anthropic: "rate_limit_error", Code: CodeRateLimited}
 		}
-		return Error{Status: http.StatusTooManyRequests, OpenAI: "rate_limit_error", Anthropic: "rate_limit_error"}
 	case ue.Status == http.StatusNotFound:
-		return Error{Status: http.StatusNotFound, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}
+		out = Error{Status: http.StatusNotFound, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}
 	case ue.Status == http.StatusOK:
 		// 防御分支：业务错误不再产出 Status=200（`detectUpstreamError` 现在从
 		// error_code 里取真实状态码，见 `statusFromCode`）。保留它只为兜住将来
 		// 某个调用方又写出 `Status: 200` 的错误 —— 那属于客户端问题，不该报成网关故障。
-		return Error{Status: http.StatusBadRequest, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}
+		out = Error{Status: http.StatusBadRequest, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}
 	case ue.Status >= 400 && ue.Status < 500:
-		return Error{Status: http.StatusBadRequest, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}
+		out = Error{Status: http.StatusBadRequest, OpenAI: "invalid_request_error", Anthropic: "invalid_request_error"}
 	default:
-		return Error{Status: http.StatusBadGateway, OpenAI: "upstream_error", Anthropic: "overloaded_error"}
+		out = Error{Status: http.StatusBadGateway, OpenAI: "upstream_error", Anthropic: "overloaded_error"}
 	}
+	return withUpstreamCode(out, ue.Message)
+}
+
+// coded 用错误类型自己声明的规范码填充 Error。
+func coded(e Error, err error) Error {
+	var c Coder
+	if errors.As(err, &c) {
+		e.Code = c.APICode()
+		e.Param = c.APIParam()
+	}
+	if e.Code == "" {
+		e.Code = codeFromStatus(e)
+	}
+	return e
+}
+
+// withUpstreamCode 为上游错误补规范码：映射表命中就用映射值，
+// 否则落到按状态码推导的通用码，并把上游原文放进 Upstream 字段。
+//
+// 「不能映射就保留原文」是刻意的：网关替客户端猜错的代价比不猜高得多，
+// 客户端至少能从 upstream_error 里看到上游到底说了什么。
+func withUpstreamCode(e Error, msg string) Error {
+	if code, param := mapUpstream(msg); code != "" {
+		e.Code = code
+		if e.Param == "" {
+			e.Param = param
+		}
+		return e
+	}
+	if e.Code == "" {
+		e.Code = codeFromStatus(e)
+	}
+	// 能映射的已经翻译成人话了，再把上游原串塞进响应只会让客户端更难判断；
+	// 映射不出来的才透出原文。
+	if msg != "" {
+		e.Upstream = msg
+	}
+	return e
+}
+
+// codeFromStatus 是「没有更具体的码」时的兜底。
+func codeFromStatus(e Error) string {
+	switch {
+	case e.Status == http.StatusServiceUnavailable:
+		return CodeNoAccount
+	case e.Status == http.StatusTooManyRequests:
+		return CodeRateLimited
+	case e.Status >= 400 && e.Status < 500:
+		return CodeInvalidValue
+	case e.Status >= 500:
+		return CodeUpstream
+	}
+	return ""
 }

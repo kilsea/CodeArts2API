@@ -173,7 +173,11 @@ func MessageToOpenAI(m Message) ([]map[string]any, error) {
 				"content":      ToolResultText(b),
 			})
 		case "thinking", "redacted_thinking":
-			// 不回流推理内容：上游不需要，且会浪费上下文
+			// 不回流推理内容：上游不需要，且会浪费上下文。
+			//
+			// signature 同理不校验：真实的 Anthropic 签名我们既签不出也验不了，
+			// 而拒绝一个带了「陌生签名」的块只会把合法客户端挡在门外。
+			// （网关自己发的签名见 ThinkingSignature。）
 		}
 	}
 
@@ -312,7 +316,13 @@ func FromOpenAI(raw []byte, model string) Reply {
 		thinking = ch.Message.ReasoningContent
 		text = ch.Message.Content
 		if thinking != "" {
-			content = append(content, map[string]any{"type": "thinking", "thinking": thinking})
+			// signature 不能缺：官方 SDK / Claude Code 在多轮回传 assistant 内容时
+			// 会校验它，缺失会让第二轮直接 400（错误出现在客户端，极难定位）。
+			content = append(content, map[string]any{
+				"type":      "thinking",
+				"thinking":  thinking,
+				"signature": ThinkingSignature(thinking),
+			})
 		}
 		if text != "" {
 			content = append(content, map[string]any{"type": "text", "text": text})

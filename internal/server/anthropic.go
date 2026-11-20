@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
+
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,9 +33,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	start := time.Now()
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
-	if err != nil {
-		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "读取请求体失败: "+err.Error())
+	body, ok := readBody(w, r, errAnthropic)
+	if !ok {
 		return
 	}
 	var req protocol.Request
@@ -45,19 +46,31 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "messages 不能为空")
 		return
 	}
+	if len(req.Messages) > maxMessages {
+		writeAnthropicErr(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+			"messages 条数超过上限（"+strconv.Itoa(maxMessages)+" 条）")
+		return
+	}
 
 	settings := s.Store.Settings()
-	model, err := s.resolveModel(settings, req.Model)
+	model, fallback, err := s.resolveModel(settings, req.Model)
 	if err != nil {
-		writeAnthropicErr(w, apierr.From(err).Status, "invalid_request_error", err.Error())
+		// 请求侧拒绝也要进日志：否则客户端贴来一个 X-Request-Id，网关里搜不到任何东西。
+		s.record(requestID(r.Context()), extractKey(r), nil, req.Model, req.Stream,
+			apierr.From(err).Status, start, 0, 0, 0, err)
+		writeAPIErr(w, errAnthropic, err)
 		return
+	}
+	if fallback {
+		announceFallback(w, strings.TrimSpace(req.Model), model.ID)
 	}
 	if !settings.AllowCreditModels {
-		writeAnthropicErr(w, http.StatusForbidden, "invalid_request_error",
-			"模型 "+model.ID+" 会真实消耗积分，当前已在控制台关闭。如需使用请开启「允许计费模型」。")
+		msg := "模型 " + model.ID + " 会真实消耗积分，当前已在控制台关闭。如需使用请开启「允许计费模型」。"
+		s.record(requestID(r.Context()), extractKey(r), nil, model.ID, req.Stream,
+			http.StatusForbidden, start, 0, 0, 0, errors.New(msg))
+		writeAnthropicErr(w, http.StatusForbidden, "invalid_request_error", msg)
 		return
 	}
-
 	upReq, err := protocol.ToOpenAI(&req, model.ID)
 	if err != nil {
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -99,14 +112,14 @@ func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, body 
 	})
 	if err != nil {
 		e := apierr.From(err)
-		s.record(key, acct, model.ID, false, e.Status, start, promptLen, 0, tried, err)
-		writeAnthropicErr(w, e.Status, e.Anthropic, err.Error())
+		s.record(requestID(r.Context()), key, acct, model.ID, false, e.Status, start, promptLen, 0, tried, err)
+		writeAPIErr(w, errAnthropic, err)
 		return
 	}
 
 	out := protocol.FromOpenAI(raw, model.ID)
 	outLen = len([]rune(out.Text)) + len([]rune(out.Thinking))
-	s.record(key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil)
+	s.record(requestID(r.Context()), key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil)
 	writeJSON(w, http.StatusOK, out.Payload)
 }
 
@@ -151,22 +164,25 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, body []
 	streamErr = err
 
 	if !started {
-		e := apierr.From(err)
-		msg := "全部账号均不可用"
-		if err != nil {
-			msg = err.Error()
+		// 上游连一次都没成功：按普通错误返回，客户端能拿到明确的状态码。
+		// err == nil 但一个分片都没有，说明上游空响应，归为上游故障（502）。
+		if err == nil {
+			err = codearts.UpstreamBusinessError(http.StatusBadGateway, "上游没有返回任何分片")
 		}
-		s.record(key, acct, model.ID, true, e.Status, start, promptLen, outLen, tried, err)
-		writeAnthropicErr(w, e.Status, e.Anthropic, msg)
+		e := apierr.From(err)
+		s.record(requestID(r.Context()), key, acct, model.ID, true, e.Status, start, promptLen, outLen, tried, err)
+		writeAPIErr(w, errAnthropic, err)
 		return
 	}
 	if streamErr != nil {
-		writeSSE(w, flusher, "error", map[string]any{
-			"type":  "error",
-			"error": map[string]any{"type": apierr.From(streamErr).Anthropic, "message": streamErr.Error()},
-		})
+		e := apierr.From(streamErr)
+		body := map[string]any{"type": e.Anthropic, "message": streamErr.Error()}
+		if e.Code != "" {
+			body["code"] = e.Code
+		}
+		writeSSE(w, flusher, "error", map[string]any{"type": "error", "error": body})
 	}
-	s.record(key, acct, model.ID, true, apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr)
+	s.record(requestID(r.Context()), key, acct, model.ID, true, apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr)
 }
 
 // --- OpenAI SSE → Anthropic SSE ---
@@ -185,6 +201,9 @@ type anthropicStream struct {
 	toolID   string
 	toolName string
 	outTok   int
+	// thinkBuf 累积当前 thinking 块的正文，收块时据此派生 signature。
+	// 必须在块内累积：signature 是对整块内容做 HMAC，不是逐片。
+	thinkBuf strings.Builder
 	// sawToolUse 记录是否出现过工具调用，用于决定 stop_reason
 	sawToolUse bool
 }
@@ -210,11 +229,10 @@ func (a *anthropicStream) openBlock(kind string) {
 	if a.kind == kind {
 		return
 	}
-	if a.kind != "" {
-		a.send("content_block_stop", map[string]any{"type": "content_block_stop", "index": a.index})
-	}
+	a.closeBlock()
 	a.index++
 	a.kind = kind
+	a.thinkBuf.Reset()
 	var block map[string]any
 	switch kind {
 	case "thinking":
@@ -227,6 +245,27 @@ func (a *anthropicStream) openBlock(kind string) {
 	a.send("content_block_start", map[string]any{
 		"type": "content_block_start", "index": a.index, "content_block": block,
 	})
+}
+
+// closeBlock 结束当前内容块。
+//
+// thinking 块必须在此刻补一个 signature_delta：Anthropic 官方 SDK / Claude Code
+// 在多轮回传 assistant 内容时会校验 thinking 块的 signature，缺失会导致
+// 后续请求 400 —— 典型表现是「第一轮能用、第二轮崩」。
+func (a *anthropicStream) closeBlock() {
+	if a.kind == "" {
+		return
+	}
+	if a.kind == "thinking" {
+		if sig := protocol.ThinkingSignature(a.thinkBuf.String()); sig != "" {
+			a.send("content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": a.index,
+				"delta": map[string]any{"type": "signature_delta", "signature": sig},
+			})
+		}
+	}
+	a.send("content_block_stop", map[string]any{"type": "content_block_stop", "index": a.index})
+	a.kind = ""
 }
 
 // consume 处理一个上游分片，返回新增的输出字符数。
@@ -257,6 +296,7 @@ func (a *anthropicStream) consume(chunk []byte) (int, error) {
 			a.openBlock("thinking")
 			n += len([]rune(ch.Delta.ReasoningContent))
 			a.outTok += len([]rune(ch.Delta.ReasoningContent))
+			a.thinkBuf.WriteString(ch.Delta.ReasoningContent)
 			a.send("content_block_delta", map[string]any{
 				"type": "content_block_delta", "index": a.index,
 				"delta": map[string]any{"type": "thinking_delta", "thinking": ch.Delta.ReasoningContent},
@@ -303,7 +343,7 @@ func (a *anthropicStream) finish(stopReason string) {
 		}
 	}
 	if a.kind != "" {
-		a.send("content_block_stop", map[string]any{"type": "content_block_stop", "index": a.index})
+		a.closeBlock()
 	}
 	a.send("message_delta", map[string]any{
 		"type":  "message_delta",
@@ -327,10 +367,7 @@ func writeSSE(w http.ResponseWriter, f http.Flusher, event string, payload map[s
 	f.Flush()
 }
 
-// writeAnthropicErr 按 Anthropic 的错误结构返回。
+// writeAnthropicErr 按 Anthropic 的错误结构返回（不带规范码的简易形式）。
 func writeAnthropicErr(w http.ResponseWriter, code int, typ, msg string) {
-	writeJSON(w, code, map[string]any{
-		"type":  "error",
-		"error": map[string]any{"type": typ, "message": msg},
-	})
+	writeAnthropicAPIErr(w, apierr.Error{Status: code, Anthropic: typ}, msg)
 }

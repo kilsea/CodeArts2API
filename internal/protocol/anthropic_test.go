@@ -214,10 +214,21 @@ func TestOpenAIToAnthropicThinkingTextTools(t *testing.T) {
 	}
 	// id 是随机生成的，固定后再整体比对。
 	reply.Payload["id"] = "msg_fixed"
+	// signature 由正文 + 进程密钥派生（每次启动不同），先校验再固定，
+	// 否则这条黄金快照会随进程密钥漂移。
+	blocks, _ := reply.Payload["content"].([]map[string]any)
+	if len(blocks) == 0 || blocks[0]["type"] != "thinking" {
+		t.Fatalf("首块应为 thinking，得到 %v", blocks)
+	}
+	sig, _ := blocks[0]["signature"].(string)
+	if !VerifyThinkingSignature("think", sig) {
+		t.Errorf("thinking 块的 signature 与正文不匹配: %q", sig)
+	}
+	blocks[0]["signature"] = "SIG"
 	jsonEq(t, reply.Payload, `{
 		"id":"msg_fixed","type":"message","role":"assistant","model":"m",
 		"content":[
-			{"type":"thinking","thinking":"think"},
+			{"type":"thinking","thinking":"think","signature":"SIG"},
 			{"type":"text","text":"hi"},
 			{"type":"tool_use","id":"call_1","name":"f","input":{"x":1}}
 		],

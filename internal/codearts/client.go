@@ -444,6 +444,11 @@ func truncate(s string, n int) string {
 //
 // 返回的 status 是**业务状态码**（见 statusFromCode），调用方据此判断
 // 这是「请求本身有问题」还是「账号有问题」。
+//
+// msg 刻意带上 `error_code:` 前缀：上游的业务码（TM.00001041 /
+// InferHub.001001005 …）是唯一能可靠区分「并发上限」「参数越界」
+// 「模型不支持多模态」的依据，丢掉它就只能看 HTTP 状态码猜。
+// 格式与 newBusinessError 保持一致（`code + ": " + msg`）。
 func IsUpstreamBusinessError(payload []byte) (msg string, status int, bad bool) {
 	var probe struct {
 		ErrorCode string `json:"error_code"`
@@ -455,11 +460,11 @@ func IsUpstreamBusinessError(payload []byte) (msg string, status int, bad bool) 
 	if probe.ErrorCode == "" {
 		return "", 0, false
 	}
-	msg = probe.ErrorMsg
-	if msg == "" {
-		msg = "上游返回业务错误 " + probe.ErrorCode
+	body := probe.ErrorMsg
+	if body == "" {
+		body = "上游返回业务错误"
 	}
-	return msg, statusFromCode(probe.ErrorCode), true
+	return probe.ErrorCode + ": " + body, statusFromCode(probe.ErrorCode), true
 }
 
 // EnsureTrimmed 去掉字符串两端空白（供调用方复用）。

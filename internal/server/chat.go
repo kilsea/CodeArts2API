@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"codearts2api/internal/apierr"
@@ -31,43 +33,73 @@ type chatRequest struct {
 // handleChatCompletions 是 /v1/chat/completions 的主入口。
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		writeRequestErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error", "", "")
 		return
 	}
 	start := time.Now()
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), "invalid_request_error")
+	body, ok := readBody(w, r, errOpenAI)
+	if !ok {
 		return
 	}
 
 	var req chatRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error(), "invalid_request_error")
+		writeRequestErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error(),
+			"invalid_request_error", apierr.CodeInvalidValue, "")
 		return
 	}
 	if len(req.Messages) == 0 {
-		writeErr(w, http.StatusBadRequest, "messages 不能为空", "invalid_request_error")
+		writeRequestErr(w, http.StatusBadRequest, "messages 不能为空",
+			"invalid_request_error", apierr.CodeInvalidValue, "messages")
+		return
+	}
+
+	// 请求体前置校验：参数越界 / 不支持的字段在触达上游之前处理掉。
+	// 未支持字段的声明必须写进响应头，所以这里先记下来，等开始写响应时再补。
+	body, dropped, err := validateChatRequest(body)
+	if err != nil {
+		s.record(requestID(r.Context()), extractKey(r), nil, req.Model, req.Stream,
+			apierr.From(err).Status, start, 0, 0, 0, err)
+		writeAPIErr(w, errOpenAI, err)
+		return
+	}
+	announceUnsupported(w, dropped)
+
+	// 角色规范化必须在 rewriteModel 之前：上游只认 system/user/assistant/tool，
+	// 其余写法会换来一句会误导人的「Message role cannot empty」。
+	body, err = normalizeRoles(body)
+	if err != nil {
+		s.record(requestID(r.Context()), extractKey(r), nil, req.Model, req.Stream, apierr.From(err).Status, start, 0, 0, 0, err)
+		writeAPIErr(w, errOpenAI, err)
 		return
 	}
 
 	settings := s.Store.Settings()
-	model, err := s.resolveModel(settings, req.Model)
+	model, fallback, err := s.resolveModel(settings, req.Model)
 	if err != nil {
-		writeErr(w, apierr.From(err).Status, err.Error(), "invalid_request_error")
+		// 请求侧拒绝也要进日志：否则客户端贴来一个 X-Request-Id，网关里搜不到任何东西。
+		s.record(requestID(r.Context()), extractKey(r), nil, req.Model, req.Stream,
+			apierr.From(err).Status, start, 0, 0, 0, err)
+		writeAPIErr(w, errOpenAI, err)
 		return
 	}
+	if fallback {
+		announceFallback(w, strings.TrimSpace(req.Model), model.ID)
+	}
 	if !settings.AllowCreditModels {
-		writeErr(w, http.StatusForbidden,
-			"模型 "+model.ID+" 会真实消耗积分，当前已在控制台关闭。如需使用请开启「允许计费模型」。",
-			"invalid_request_error")
+		msg := "模型 " + model.ID + " 会真实消耗积分，当前已在控制台关闭。如需使用请开启「允许计费模型」。"
+		s.record(requestID(r.Context()), extractKey(r), nil, model.ID, req.Stream,
+			http.StatusForbidden, start, 0, 0, 0, errors.New(msg))
+		writeRequestErr(w, http.StatusForbidden, msg,
+			"invalid_request_error", apierr.CodeCreditDisabled, "model")
 		return
 	}
 
 	upBody, err := rewriteModel(body, model.ID, req.Stream)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体改写失败: "+err.Error(), "invalid_request_error")
+		writeRequestErr(w, http.StatusBadRequest, "请求体改写失败: "+err.Error(),
+			"invalid_request_error", apierr.CodeInvalidValue, "")
 		return
 	}
 
@@ -102,13 +134,16 @@ func (s *Server) blockingChat(w http.ResponseWriter, r *http.Request, body []byt
 	})
 	if err != nil {
 		e := apierr.From(err)
-		s.record(key, acct, model.ID, false, e.Status, start, promptLen, 0, tried, err)
-		writeErr(w, e.Status, err.Error(), e.OpenAI)
+		s.record(requestID(r.Context()), key, acct, model.ID, false, e.Status, start, promptLen, 0, tried, err)
+		writeAPIErr(w, errOpenAI, err)
 		return
 	}
 
 	outLen = completionLen(raw)
-	s.record(key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil)
+	// 响应体里的 model 必须是**实际执行**的模型：客户端靠它判断自己到底在用什么，
+	// 回填请求里的名字（尤其别名 / 兼容别名命中时）等于骗人。
+	raw = withExecutedModel(raw, model.ID)
+	s.record(requestID(r.Context()), key, acct, model.ID, false, http.StatusOK, start, promptLen, outLen, tried, nil)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -119,7 +154,8 @@ func (s *Server) blockingChat(w http.ResponseWriter, r *http.Request, body []byt
 func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, body []byte, model registry.Model, key string, timeout time.Duration, start time.Time, promptLen int) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeErr(w, http.StatusInternalServerError, "服务端不支持流式响应", "server_error")
+		writeRequestErr(w, http.StatusInternalServerError, "服务端不支持流式响应",
+			"server_error", apierr.CodeInternal, "stream")
 		return
 	}
 
@@ -132,6 +168,7 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, body []byte,
 
 	acct, tried, err := s.withAccountRetry(r.Context(), timeout, func(ctx context.Context, acct *codearts.Account) error {
 		return s.streamOnce(ctx, acct, model, body, func(chunk []byte) error {
+			chunk = withExecutedModel(chunk, model.ID)
 			if !started {
 				h := w.Header()
 				h.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -153,33 +190,31 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, body []byte,
 	streamErr = err
 
 	if !started {
-		// 上游连一次都没成功：按普通错误返回，客户端能拿到明确的状态码
-		e := apierr.From(err)
-		msg := "全部账号均不可用"
-		if err != nil {
-			msg = err.Error()
+		// 上游连一次都没成功：按普通错误返回，客户端能拿到明确的状态码。
+		// err == nil 但一个分片都没有，说明上游空响应，归为上游故障（502）。
+		if err == nil {
+			err = codearts.UpstreamBusinessError(http.StatusBadGateway, "上游没有返回任何分片")
 		}
-		s.record(key, acct, model.ID, true, e.Status, start, promptLen, outLen, tried, err)
-		writeErr(w, e.Status, msg, e.OpenAI)
+		e := apierr.From(err)
+		s.record(requestID(r.Context()), key, acct, model.ID, true, e.Status, start, promptLen, outLen, tried, err)
+		writeAPIErr(w, errOpenAI, err)
 		return
 	}
 
 	if streamErr != nil {
 		// 已经在流里了，只能以 SSE 错误块收尾（OpenAI 客户端只看 error 对象）
 		e := apierr.From(streamErr)
-		errChunk, _ := json.Marshal(map[string]any{
-			"error": map[string]any{
-				"message": streamErr.Error(),
-				"type":    e.OpenAI,
-				"code":    e.Status,
-			},
-		})
+		body := map[string]any{"message": streamErr.Error(), "type": e.OpenAI}
+		if e.Code != "" {
+			body["code"] = e.Code
+		}
+		errChunk, _ := json.Marshal(map[string]any{"error": body})
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", errChunk)
 	}
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
-	s.record(key, acct, model.ID, true, apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr)
+	s.record(requestID(r.Context()), key, acct, model.ID, true, apierr.From(streamErr).Status, start, promptLen, outLen, tried, streamErr)
 }
 
 // chatOnce 用指定账号发一次非流式请求。
@@ -411,9 +446,11 @@ func rewriteStream(body []byte, stream bool) ([]byte, error) {
 // attempts 是本次请求实际尝试的账号数（withAccountRetry 的返回值），
 // 让日志能区分「一次成功」与「重试 N 次后失败」；ErrClass 由 apierr.Classify 推导，
 // 控制台据此按「审核 / 参数 / 登录态 / 临时 / 上游」筛选，不必读错误原文。
-func (s *Server) record(key string, acct *codearts.Account, model string, stream bool, status int, start time.Time, inLen, outLen, attempts int, err error) {
+// rid 是响应头 X-Request-Id 的值：客户端贴来一个 id，就能在日志里定位到这一条。
+func (s *Server) record(rid, key string, acct *codearts.Account, model string, stream bool, status int, start time.Time, inLen, outLen, attempts int, err error) {
 	e := store.LogEntry{
 		Time:      time.Now().Unix(),
+		RequestID: rid,
 		Key:       codearts.Mask(key),
 		Model:     model,
 		Stream:    stream,

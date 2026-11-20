@@ -108,7 +108,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/", s.handleRoot)
 
-	return s.withCORS(mux)
+	// 请求关联 id 放在最外层：连 CORS 预检失败、路由 404 的响应也带 X-Request-Id。
+	return s.withRequestID(s.withCORS(mux))
 }
 
 // withCORS 处理跨域。
@@ -264,14 +265,14 @@ func retryAfterSeconds(d time.Duration) int {
 
 // writeAPIErr 按指定协议风格写出错误。
 //
-// 状态码与两套 error.type 一律由 apierr.From 决定 —— 这里只选形状，不选语义。
+// 状态码、error.type 与规范错误码一律由 apierr.From 决定 —— 这里只选形状，不选语义。
 func writeAPIErr(w http.ResponseWriter, style errStyle, err error) {
 	e := apierr.From(err)
 	if style == errAnthropic {
-		writeAnthropicErr(w, e.Status, e.Anthropic, err.Error())
+		writeAnthropicAPIErr(w, e, err.Error())
 		return
 	}
-	writeErr(w, e.Status, err.Error(), e.OpenAI)
+	writeOpenAIErr(w, e.Status, e, err.Error())
 }
 
 // rateLimitConfig 把设置转换为限流参数。
@@ -451,6 +452,7 @@ func sanitizedSettings(st store.Settings) map[string]any {
 		"cors_origin":            st.CORSOrigin,
 		"auto_refresh":           st.AutoRefresh,
 		"allow_credit_models":    st.AllowCreditModels,
+		"model_fallback":         st.ModelFallback,
 		"allow_anonymous":        st.AllowAnonymous,
 		"rate_limit_enabled":     st.RateLimitEnabled,
 		"rate_limit_qps":         st.RateLimitQPS,

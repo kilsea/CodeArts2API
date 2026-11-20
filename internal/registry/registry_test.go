@@ -31,9 +31,12 @@ func TestResolveOnlyKnownModels(t *testing.T) {
 		{"GLM-5.3", "glm-5.3", true}, // 大小写无关
 		{"glm-5.3-flash", "", false}, // 已下线的旧模型名
 		{"deepseek-v4-pro-0813", "", false},
-		{"gpt-4o", "glm-5.3", true}, // 内置别名 → 现存模型
-		{"gpt-5", "GLM-5.2", true},
-		{"deepseek-chat", "deepseek-v4.1-flash", true},
+		// 内置兼容别名**默认不解析**：gpt-4o 实际由 GLM 回答，静默换模型
+		// 等于替用户乱花钱。要它们生效必须显式打开 ModelFallback，
+		// 走 ResolveLegacy（见下一个用例）。
+		{"gpt-4o", "", false},
+		{"gpt-5", "", false},
+		{"deepseek-chat", "", false},
 		{"disabled-model", "", false}, // 上游标记 disabled 的不暴露
 		{"glm", "", false},            // 不做模糊匹配
 		{"", "glm-5.3", true},         // 未指定模型 → 默认模型
@@ -119,6 +122,34 @@ func TestCustomAlias(t *testing.T) {
 		if x.ID == "my-dead" {
 			t.Error("目标不存在的别名不应出现在模型清单里")
 		}
+	}
+}
+
+// TestResolveLegacyAliases 确认内置兼容别名只能显式解析（ResolveLegacy），
+// 且解析结果指向当前真实存在的模型。
+//
+// 回归背景：gpt-4o 曾经默认被解析成 glm-5.3，客户端以为在用 GPT-4o，
+// 实际由 GLM 回答并真实扣积分，而 README 又声称「无法识别的模型名直接 404」。
+func TestResolveLegacyAliases(t *testing.T) {
+	r := New()
+	r.Replace(FromBuiltin([]codearts.BuiltinModel{
+		{ModelID: "glm-5.3", Enable: true},
+		{ModelID: "GLM-5.2", Enable: true},
+	}))
+
+	if _, ok := r.Resolve("gpt-4o", nil); ok {
+		t.Fatal("Resolve 不应解析内置兼容别名")
+	}
+	m, ok := r.ResolveLegacy("GPT-4o", nil)
+	if !ok || m.ID != "glm-5.3" {
+		t.Fatalf("ResolveLegacy(gpt-4o) = %+v ok=%v，期望 glm-5.3", m, ok)
+	}
+	// 别名指向已下线的模型时同样解析失败，不能把死模型名发给上游。
+	if _, ok := r.ResolveLegacy("nope", nil); ok {
+		t.Error("未知名字应解析失败")
+	}
+	if names := LegacyAliasNames(); len(names) == 0 {
+		t.Error("LegacyAliasNames 为空")
 	}
 }
 

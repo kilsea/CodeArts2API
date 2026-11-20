@@ -26,7 +26,7 @@ func TestResolveModelRejectsUnknown(t *testing.T) {
 	settings := store.DefaultSettings()
 
 	// 已下线的旧模型名：解析失败，且错误信息里带上可用模型。
-	_, err := s.resolveModel(settings, "glm-5.3-flash")
+	_, _, err := s.resolveModel(settings, "glm-5.3-flash")
 	if err == nil {
 		t.Fatal("已下线的模型名应解析失败")
 	}
@@ -45,7 +45,7 @@ func TestResolveModelRejectsUnknown(t *testing.T) {
 	}
 
 	// 已知模型照常解析。
-	m, err := s.resolveModel(settings, "glm-5.3")
+	m, _, err := s.resolveModel(settings, "glm-5.3")
 	if err != nil {
 		t.Fatalf("已知模型解析失败: %v", err)
 	}
@@ -65,14 +65,14 @@ func TestResolveModelPriority(t *testing.T) {
 	settings := store.DefaultSettings()
 	settings.DefaultModel = "GLM-5.2"
 
-	if m, err := s.resolveModel(settings, ""); err != nil || m.ID != "GLM-5.2" {
+	if m, _, err := s.resolveModel(settings, ""); err != nil || m.ID != "GLM-5.2" {
 		t.Errorf("空模型名应回落到默认模型，得到 %q err=%v", m.ID, err)
 	}
-	if m, err := s.resolveModel(settings, "glm-5.3"); err != nil || m.ID != "glm-5.3" {
+	if m, _, err := s.resolveModel(settings, "glm-5.3"); err != nil || m.ID != "glm-5.3" {
 		t.Errorf("请求里的模型应优先于默认模型，得到 %q err=%v", m.ID, err)
 	}
 	settings.ForceModel = "GLM-5.2"
-	if m, err := s.resolveModel(settings, "glm-5.3"); err != nil || m.ID != "GLM-5.2" {
+	if m, _, err := s.resolveModel(settings, "glm-5.3"); err != nil || m.ID != "GLM-5.2" {
 		t.Errorf("强制模型应优先于请求里的模型，得到 %q err=%v", m.ID, err)
 	}
 }
