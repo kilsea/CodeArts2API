@@ -53,7 +53,7 @@ func TestAdminLogsFilters(t *testing.T) {
 	s.Store.Record(store.LogEntry{Time: base + 1, RequestID: "bad-1", Model: "glm-5.3", Status: 400,
 		ErrClass: "client_request", Err: "invalid_role"}, 0)
 	s.Store.Record(store.LogEntry{Time: base + 2, RequestID: "up-1", Model: "kimi-k3", Status: 502,
-		ErrClass: "upstream", Account: "acct-b", Credits: 1.2}, 0)
+		ErrClass: "upstream"}, 0)
 
 	get := func(query string) []store.LogEntry {
 		rec := httptest.NewRecorder()
@@ -82,12 +82,6 @@ func TestAdminLogsFilters(t *testing.T) {
 	if got := get("?q=invalid_role"); len(got) != 1 || got[0].RequestID != "bad-1" {
 		t.Errorf("关键字过滤结果不对: %+v", got)
 	}
-	if got := get("?account=acct-b"); len(got) != 1 || got[0].RequestID != "up-1" {
-		t.Errorf("account 过滤结果不对: %+v", got)
-	}
-	if got := get("?min_credits=1"); len(got) != 1 || got[0].RequestID != "up-1" {
-		t.Errorf("min_credits 过滤结果不对: %+v", got)
-	}
 	// 返回顺序仍是「最新在前」。
 	all := get("")
 	if len(all) != 3 || all[0].RequestID != "up-1" {
@@ -95,15 +89,10 @@ func TestAdminLogsFilters(t *testing.T) {
 	}
 }
 
-// TestAdminUsage 用量聚合接口：一次返回总账 / 按天 / 按模型 / 按账号。
+// TestAdminUsage 用量聚合接口。
 func TestAdminUsage(t *testing.T) {
 	s, _ := setupCompatServer(t)
-	now := time.Now().Unix()
-	s.Store.Record(store.LogEntry{Time: now, AccountID: "a", Account: "acct-a", Model: "glm-5.3",
-		Status: 200, PromptLen: 8, InTokens: 100, OutTokens: 10, CachedTokens: 60,
-		Credits: 0.5, CreditSource: "upstream", LatencyMS: 900}, 4)
-	s.Store.Record(store.LogEntry{Time: now, AccountID: "b", Account: "acct-b", Model: "kimi-k3",
-		Status: 200, PromptLen: 3, InTokens: 20, OutTokens: 5, Credits: 1.5, CreditSource: "upstream"}, 2)
+	s.Store.Record(store.LogEntry{Time: time.Now().Unix(), Model: "glm-5.3", Status: 200, PromptLen: 8}, 4)
 
 	rec := httptest.NewRecorder()
 	s.handleAdminUsage(rec, httptest.NewRequest(http.MethodGet, "/admin/api/usage?days=7", nil))
@@ -111,60 +100,17 @@ func TestAdminUsage(t *testing.T) {
 		t.Fatalf("状态码 = %d", rec.Code)
 	}
 	var out struct {
-		Days      int                    `json:"days"`
-		Rows      []store.UsageRow       `json:"rows"`
-		Total     store.UsageTotals      `json:"total"`
-		ByDay     []store.UsageRow       `json:"by_day"`
-		ByModel   []store.UsageRow       `json:"by_model"`
-		ByAccount []store.UsageRow       `json:"by_account"`
-		ByHour    []store.UsageRow       `json:"by_hour"`
-		Hours     int                    `json:"hours"`
-		Actual    []store.CreditSpendRow `json:"actual"`
+		Days int              `json:"days"`
+		Rows []store.UsageRow `json:"rows"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("响应不是合法 JSON: %v", err)
 	}
-	if out.Hours != 48 || len(out.ByHour) != 1 || out.ByHour[0].Requests != 2 {
-		t.Errorf("逐小时时序不对: hours=%d rows=%+v", out.Hours, out.ByHour)
-	}
-	if out.Total.LatencyMS != 900 || out.Total.CachedTokens != 60 {
-		t.Errorf("延迟 / 缓存合计不对: %+v", out.Total)
-	}
-	if out.Days != 7 || len(out.Rows) != 2 {
+	if out.Days != 7 || len(out.Rows) != 1 {
 		t.Fatalf("用量响应不对: %+v", out)
 	}
-	if out.Total.Requests != 2 || out.Total.Credits != 2 || out.Total.InTokens != 120 {
-		t.Errorf("总计不对: %+v", out.Total)
-	}
-	if len(out.ByDay) != 1 || out.ByDay[0].Credits != 2 {
-		t.Errorf("按天归并不对: %+v", out.ByDay)
-	}
-	if len(out.ByModel) != 2 {
-		t.Errorf("按模型归并应有 2 行: %+v", out.ByModel)
-	}
-	if len(out.ByAccount) != 2 {
-		t.Errorf("按账号归并应有 2 行: %+v", out.ByAccount)
-	}
-
-	// ?account= / ?model= 收窄同一个响应里的所有切面。
-	rec = httptest.NewRecorder()
-	s.handleAdminUsage(rec, httptest.NewRequest(http.MethodGet, "/admin/api/usage?days=7&account=a", nil))
-	out = struct {
-		Days      int                    `json:"days"`
-		Rows      []store.UsageRow       `json:"rows"`
-		Total     store.UsageTotals      `json:"total"`
-		ByDay     []store.UsageRow       `json:"by_day"`
-		ByModel   []store.UsageRow       `json:"by_model"`
-		ByAccount []store.UsageRow       `json:"by_account"`
-		ByHour    []store.UsageRow       `json:"by_hour"`
-		Hours     int                    `json:"hours"`
-		Actual    []store.CreditSpendRow `json:"actual"`
-	}{}
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("过滤响应不是合法 JSON: %v", err)
-	}
-	if len(out.Rows) != 1 || out.Rows[0].AccountID != "a" || out.Total.Credits != 0.5 {
-		t.Errorf("按账号收窄不对: %+v", out.Rows)
+	if out.Rows[0].Requests != 1 || out.Rows[0].CharsOut != 4 {
+		t.Errorf("用量聚合不对: %+v", out.Rows[0])
 	}
 }
 

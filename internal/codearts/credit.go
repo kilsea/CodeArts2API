@@ -90,7 +90,7 @@ type CreditInfo struct {
 // 这是一次轻量的只读统计查询，不消耗积分、也不产生推理费用。
 // 上游要求与其它 snap-manager 接口相同的 SDK-HMAC-SHA256 签名（凭据自带）。
 func (c *Client) FetchCreditInfo(ctx context.Context, sess *Session) (*CreditInfo, error) {
-	resp, err := c.do(ctx, sess, http.MethodGet, SnapHost, CreditPath, nil, c.baseHeaders(sess, "", ""))
+	resp, err := c.do(ctx, sess, http.MethodGet, SnapHost, CreditPath, nil, c.baseHeaders(sess, ""))
 	if err != nil {
 		return nil, err
 	}

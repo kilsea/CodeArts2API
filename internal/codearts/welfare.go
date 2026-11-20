@@ -127,7 +127,7 @@ type welfareEnvelope struct {
 
 // opsHeaders 是 ops 接口需要的请求头。
 func (c *Client) opsHeaders(sess *Session) map[string]string {
-	h := c.baseHeaders(sess, "", "")
+	h := c.baseHeaders(sess, "")
 	h["Agent-Type"] = "PromptCenter"
 	return h
 }

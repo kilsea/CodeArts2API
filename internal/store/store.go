@@ -134,35 +134,13 @@ type LogEntry struct {
 	RequestID string `json:"request_id,omitempty"`
 	Key       string `json:"key"`
 	Account   string `json:"account"`
-	// AccountID 是账号的稳定 ID（Account 是展示名，可能被改名）。
-	AccountID string `json:"account_id,omitempty"`
 	Model     string `json:"model"`
 	Stream    bool   `json:"stream"`
 	Status    int    `json:"status"`
 	LatencyMS int64  `json:"latency_ms"`
 	PromptLen int    `json:"prompt_len"`
 	OutputLen int    `json:"output_len"`
-	// InTokens / OutTokens / CachedTokens 是上游 usage 回报的真实 token 数。
-	//
-	// 与 PromptLen/OutputLen（字符数）是两套口径：字符数用来排查「请求体多大」，
-	// token 数用来算积分。上游没有回 usage（失败请求、老模型）时全为 0。
-	InTokens     int `json:"in_tokens,omitempty"`
-	OutTokens    int `json:"out_tokens,omitempty"`
-	CachedTokens int `json:"cached_tokens,omitempty"`
-	// Credits 是这次请求消耗的积分。
-	//
-	// CreditSource 说明它的来源：
-	//   - upstream：上游账单口径（按 user-msg-id 反查 /v1/ops/credit/usage），准确值；
-	//   - estimate：上游查询失败时的本地估算（token × 价格档位 / ratio）；
-	//   - 空：既没有账单也没有价格档位（未知）。
-	Credits      float64 `json:"credits,omitempty"`
-	CreditSource string  `json:"credit_source,omitempty"`
-	// UpstreamMsgID 是这次请求发给上游的 user-msg-id。
-	//
-	// 保留它只为对账：上游 `GET /v1/ops/credit/usage?type=msg&id=<它>` 能
-	// 复核这条记录到底扣了多少（docs/CREDITS.md）。
-	UpstreamMsgID string `json:"upstream_msg_id,omitempty"`
-	Err           string `json:"err,omitempty"`
+	Err       string `json:"err,omitempty"`
 	// ErrClass 是错误的分类标签（apierr.Classify 的结果），成功时为空。
 	// 让控制台能按「审核 / 参数 / 登录态 / 临时 / 上游」筛选，不必读错误原文。
 	ErrClass string `json:"err_class,omitempty"`
@@ -176,15 +154,7 @@ type Stats struct {
 	TotalRequests  int64 `json:"total_requests"`
 	FailedRequests int64 `json:"failed_requests"`
 	TotalCharsOut  int64 `json:"total_chars_out"`
-	// TotalCredits 是累计积分消耗（含重启前，随状态文件持久化）。
-	TotalCredits float64 `json:"total_credits"`
-	// TotalInTokens / TotalOutTokens / TotalCachedTokens 是累计真实 token
-	// （上游 usage 口径）；TotalLatencyMS 是累计耗时，用来算平均延迟。
-	TotalInTokens     int64 `json:"total_in_tokens"`
-	TotalOutTokens    int64 `json:"total_out_tokens"`
-	TotalCachedTokens int64 `json:"total_cached_tokens"`
-	TotalLatencyMS    int64 `json:"total_latency_ms"`
-	StartedAt         int64 `json:"started_at"`
+	StartedAt      int64 `json:"started_at"`
 }
 
 // StateVersion 是状态文件当前的 schema 版本。
@@ -220,29 +190,11 @@ type State struct {
 	//
 	// 新增字段带 omitempty，旧状态文件能直接加载（无需升版本）。
 	Capabilities map[string]registry.Capability `json:"capabilities,omitempty"`
-	// Usage 是按「天 + 账号 + 模型」聚合的用量（保留 UsageKeepDays 天）。
+	// Usage 是按「天 + 模型」聚合的用量（保留 UsageKeepDays 天）。
 	//
 	// 只存聚合值，不存单条请求：趋势图需要的是「今天花了多少」，
 	// 而逐条记录会让状态文件无上限增长。
 	Usage []UsageRow `json:"usage,omitempty"`
-	// UsageHour 是「小时 + 账号 + 模型」桶，只保留最近 UsageHourlyKeepHours 小时。
-	//
-	// 与 Usage 的关系是「细粒度 / 粗粒度」两套口径，不是互斥：小时桶给
-	// 「最近 48 小时时序图」，日桶给 7/14/30 天与积分对账。小时桶过期自动裁掉，
-	// 所以状态文件的增长是「天数量 × 账号 × 模型 + 72 × 账号 × 模型」有界的。
-	UsageHour []UsageRow `json:"usage_hour,omitempty"`
-	// CreditSpend 是按「天 + 账号」记录的真实积分消耗（快照差值）。
-	//
-	// 上游没有逐请求计费流水，但 `/snap-manager/v1/statistics/plugin` 的
-	// package_credit_used 是真实值。后台快照循环每次刷新时算出增量，
-	// 按账号累加到当天 —— 它和 Usage.Credits（按模型估算）互相校验：
-	// 估算总和应该贴着实测总和，差太多说明公式或价格档位变了。
-	CreditSpend []CreditSpendRow `json:"credit_spend,omitempty"`
-	// Balances 是积分水位（剩余额度）的时序采样，见 balance.go。
-	//
-	// 与 CreditSpend 的关系：CreditSpend 是「花掉多少」的账本（只有增量、
-	// 画不出水位），Balances 是「还剩多少」的快照，用于余额趋势图。
-	Balances []BalanceSample `json:"balances,omitempty"`
 }
 
 // Store 是带锁的状态容器。
@@ -280,10 +232,6 @@ type Store struct {
 	// flushMu / flushTimer 合并高频落盘：连续对话不该每个请求都全量重写状态文件。
 	flushMu    sync.Mutex
 	flushTimer *time.Timer
-	// lastUsageDay / lastUsageHour 记录上一次裁剪桶的时间键（内存态，不落盘）：
-	// 只有跨天 / 跨小时的那一条请求才做裁剪，避免每条请求扫一遍聚合表。
-	lastUsageDay  string
-	lastUsageHour string
 }
 
 // DefaultSettings 返回默认设置。
@@ -1115,35 +1063,6 @@ func (s *Store) SetAccountCredit(id string, info *codearts.CreditInfo) bool {
 		a.CreditExpiring = info.Expiring
 		a.CreditResetDate = info.ResetDate
 		a.CreditRefreshedAt = time.Now().Unix()
-		if info.Available {
-			// 第一次采样前，用上一次快照补一个起点：
-			// 否则新部署要等两个采样点（10~40 分钟）才有线可画。
-			if a.CreditUsedAt > 0 && !s.hasBalanceLocked(a.ID) {
-				s.st.Balances = append(s.st.Balances, BalanceSample{
-					At:        time.Unix(a.CreditUsedAt, 0).Truncate(BalanceBucket).Unix(),
-					AccountID: a.ID,
-					Account:   a.DisplayName(),
-					Remaining: a.CreditTotal - a.CreditUsed,
-					Total:     a.CreditTotal,
-					Used:      a.CreditUsed,
-				})
-			}
-			// 快照差值 = 真实积分消耗。见 CreditSpend 的注释。
-			//
-			// 只在「已经建立过基线 + 已用只增不减」时记账：
-			//   - 第一次看到该账号的 Used 只建立基线（旧状态文件没有 CreditUsedAt）；
-			//   - 额度重置（月结）会让 Used 变小，那一段是清零而不是「负消耗」。
-			if a.CreditUsedAt > 0 && info.Used >= a.CreditUsed {
-				if delta := info.Used - a.CreditUsed; delta > 0 {
-					s.bumpCreditSpendLocked(time.Now(), a.ID, a.DisplayName(), delta)
-				}
-			}
-			a.CreditTotal = info.Total
-			a.CreditUsed = info.Used
-			a.CreditRemaining = info.Remaining
-			a.CreditUsedAt = time.Now().Unix()
-			s.recordBalanceLocked(time.Now(), a)
-		}
 		return true
 	}
 	return false
@@ -1297,11 +1216,6 @@ func (s *Store) Record(e LogEntry, outChars int) {
 		s.st.Stats.FailedRequests++
 	}
 	s.st.Stats.TotalCharsOut += int64(outChars)
-	s.st.Stats.TotalCredits += e.Credits
-	s.st.Stats.TotalInTokens += int64(e.InTokens)
-	s.st.Stats.TotalOutTokens += int64(e.OutTokens)
-	s.st.Stats.TotalCachedTokens += int64(e.CachedTokens)
-	s.st.Stats.TotalLatencyMS += e.LatencyMS
 	s.bumpUsageLocked(e, outChars)
 	s.st.Logs = append(s.st.Logs, e)
 	if keep := s.st.Settings.LogKeep; keep > 0 && len(s.st.Logs) > keep {

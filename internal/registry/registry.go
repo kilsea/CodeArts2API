@@ -47,11 +47,6 @@ type Model struct {
 	Source string `json:"source"`
 	// Credit 是积分消耗倍率（如 "0.79x"）；上游未公布计费档时为空。
 	Credit string `json:"credit,omitempty"`
-	// Pricing 是积分计费参数，用来估算每次请求的积分消耗。
-	//
-	// 不对外序列化：`/v1/models` 的字段是给客户端看的契约，价格是网关内部
-	// 记账用的（客户端拿到单价也没有意义，还会把「网关在扣多少」当成承诺）。
-	Pricing *codearts.ModelPricing `json:"-"`
 	// StreamOnly 标记上游只支持流式：非流式会返回一个空 body 的 400。
 	// 网关会自动降级为「流式 + 本地聚合」，这里只是避免每次多打一次空枪。
 	StreamOnly bool `json:"stream_only,omitempty"`
@@ -428,20 +423,13 @@ func FromBuiltin(models []codearts.BuiltinModel) []Model {
 		if m.ModelDesc != "" {
 			desc = m.ModelDesc
 		}
-		model := Model{
+		out = append(out, Model{
 			ID:     m.ModelID,
 			Name:   m.ModelName,
 			Desc:   desc,
 			Source: "upstream",
 			Credit: m.CreditRatio(),
-		}
-		for _, t := range m.Credit {
-			if p, ok := t.Pricing(); ok {
-				model.Pricing = &p
-				break
-			}
-		}
-		out = append(out, model)
+		})
 	}
 	return out
 }

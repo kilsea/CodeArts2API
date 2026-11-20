@@ -291,16 +291,6 @@
     if (h > 0) return h + " 小时 " + m + " 分";
     return m + " 分 " + (sec%60) + " 秒";
   }
-  // fmtCredits 把积分格式化成两位小数；0 / 空值显示「—」。
-  //
-  // 上游账单本身就是两位小数，这里不再做四舍五入以外的处理；
-  // 估算值在日志表里会带「≈」前缀（见 logRow）。
-  function fmtCredits(v){
-    var n = Number(v) || 0;
-    if (n <= 0) return "—";
-    return n.toFixed(2);
-  }
-
   function fmtNum(n){
     if (n === undefined || n === null) return "—";
     return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -334,24 +324,6 @@
     setText(el.children[1], text);
   }
 
-  // renderUptime 在侧栏底部显示「服务已运行多久」。
-  //
-  // 放在侧栏而不是概览：它是环境信息（和构建号、健康状态同类），
-  // 不该在首屏占一格 KPI。刷新时顺手更新，跨天/跨小时自动换单位。
-  function renderUptime(sec){
-    sec = Math.floor(Number(sec) || 0);
-    if (!(sec > 0)) { setText($("#uptime"), ""); return; }
-    var days = Math.floor(sec / 86400);
-    var hours = Math.floor((sec % 86400) / 3600);
-    var mins = Math.floor((sec % 3600) / 60);
-    var txt = days > 0 ? days + " 天 " + hours + " 小时"
-      : hours > 0 ? hours + " 小时 " + mins + " 分"
-      : mins > 0 ? mins + " 分"
-      : sec + " 秒";
-    setText($("#uptime"), "已运行 " + txt);
-    setAttr($("#uptime"), "title", "本次进程启动至今，重启即归零");
-  }
-
   function loadHealth(){
     fetch("/health").then(function(r){ return r.json(); }).then(function(h){
       var ready = h.ready || 0, total = h.accounts || 0;
@@ -363,33 +335,8 @@
 
   // KPI 卡的标题是固定的，只有数值和副标题会变：复用已有卡片、只就地改文本。
   // 整块重建会在每次有流量时闪一下，还会打断鼠标悬停。
-  function renderKpis(kpis){ renderKpisInto("#kpis", kpis); }
-
-  // KPI_MIN 是单张 KPI 卡的最小舒适宽度（再窄数字和标题就挤了）。
-  var KPI_MIN = 180;
-
-  // layoutKpis 按「容器宽度 + 卡片数量」算列数，写进 --cols。
-  //
-  // 目标是两条同时成立：
-  //   1. 每张卡不至于宽得离谱（上限由 KPI_MIN 决定）；
-  //   2. 每一行都铺满 —— 先算最多几列，再把列数压到「每行数量尽量均匀」，
-  //      例如 7 张卡在 5 列上限下排成 4 + 3，而不是 5 + 2。
-  function layoutKpis(box){
-    if (!box || !box.children.length) return;
-    var n = box.children.length;
-    var gap = 12;
-    var w = box.clientWidth || 0;
-    if (!w) return;
-    var maxCols = Math.max(1, Math.floor((w + gap) / (KPI_MIN + gap)));
-    if (maxCols > n) maxCols = n;
-    var rows = Math.ceil(n / maxCols);
-    var cols = Math.ceil(n / rows);
-    box.style.setProperty("--cols", cols);
-  }
-
-  // renderKpisInto 把 KPI 列表画进指定容器（概览与用量页各一组）。
-  function renderKpisInto(sel, kpis){
-    var box = $(sel);
+  function renderKpis(kpis){
+    var box = $("#kpis");
     if (box.children.length !== kpis.length) {
       box.textContent = "";
       kpis.forEach(function(){
@@ -409,28 +356,7 @@
       if (sub.hidden !== !item.sub) sub.hidden = !item.sub;
       setAttr(c, "title", item.title || "");
     });
-    layoutKpis(box);
   }
-
-  // 窗口尺寸变了要重算列数（KPI 卡的宽度是百分比，列数必须跟着容器走）。
-  var kpiResizeTimer = null;
-  window.addEventListener("resize", function(){
-    if (kpiResizeTimer) clearTimeout(kpiResizeTimer);
-    kpiResizeTimer = setTimeout(function(){
-      layoutKpis($("#kpis"));
-      layoutKpis($("#usageKpis"));
-    }, 120);
-  });
-
-  // 余额图是像素坐标画的（圆点不能被拉伸），窗口变宽要按新宽度重绘。
-  var balResizeTimer = null;
-  window.addEventListener("resize", function(){
-    if (balResizeTimer) clearTimeout(balResizeTimer);
-    balResizeTimer = setTimeout(function(){
-      var tab = $("#tab-balance");
-      if (balLastData && tab && tab.classList.contains("on")) renderBalance(balLastData);
-    }, 150);
-  });
 
   // 概览页拆成两路：KPI 跟着请求计数变，模型表只在上游清单变时重建。
   // 以前两者共用一个指纹，发一次请求就把整张模型表重建一遍（12 行 DOM）。
@@ -438,22 +364,22 @@
     var s = d.stats || {};
     var accts = d.accounts || [];
     var ready = accts.filter(function(a){ return a.enabled && a.status === "ok"; }).length;
+    var claimed = accts.filter(function(a){ return a.claimed_today; }).length;
     var soonest = null;
     accts.forEach(function(a){
       if (a.expires_at && (soonest === null || a.expires_at < soonest)) soonest = a.expires_at;
     });
-    // 概览只放总体口径：明细（按小时 / 按模型 / 按账号 / 每日）在「用量」页。
-    // 密钥数、今日领取、模型数、启动时间都不在这里 —— 它们在各自的页签/侧栏里，
-    // 首屏放太多一格一格的数字反而不好读。
     renderKpis([
       { k:"总请求", v: fmtNum(s.total_requests || 0) },
       { k:"失败请求", v: fmtNum(s.failed_requests || 0) },
-      { k:"累计输入 token", v: fmtNum(s.total_in_tokens || 0) },
-      { k:"累计输出 token", v: fmtNum(s.total_out_tokens || 0) },
-      { k:"累计积分", v: fmtCredits(s.total_credits || 0),
-        sub: "详见「用量」页", title: "逐请求上游账单口径（查不到时本地估算）" },
+      { k:"输出字符", v: fmtNum(s.total_chars_out || 0) },
       { k:"账号（就绪/总）", v: ready + " / " + accts.length,
-        sub: soonest ? "最早过期 " + fmtShort(soonest) : "", title: soonest ? fmtTime(soonest) : "" }
+        sub: soonest ? "最早过期 " + fmtShort(soonest) : "", title: soonest ? fmtTime(soonest) : "" },
+      { k:"密钥", v: (d.keys || []).length },
+      { k:"今日领取", v: claimed + " / " + accts.length },
+      { k:"可用模型", v: (d.models || []).length,
+        sub: (d.settings || {}).allow_credit_models ? "计费已开启" : "计费已关闭" },
+      { k:"启动时间", v: fmtShort(s.started_at), title: fmtTime(s.started_at) }
     ]);
   }
 
@@ -574,9 +500,6 @@
   // 每个账号的积分额度：id -> {loading, ok, credit, error}
   var creditState = {};
   var creditLoading = null;
-  // 上次自动查询额度的时间：账号页开着时每 5 秒一轮，不能每轮都打上游。
-  var creditFetchedAt = 0;
-  var CREDIT_REFRESH_EVERY = 5 * 60 * 1000;
 
   // loadCredits 查询账号积分额度（上游统计插件）。
   // 默认走服务端 60 秒缓存；force=true 时带 ?fresh=1 强制回源。
@@ -584,14 +507,6 @@
     if (creditLoading) return creditLoading;
     var accts = (state.data && state.data.accounts) || [];
     if (!accts.length) return Promise.resolve();
-    // 自动刷新 5 分钟一次就够：服务端虽然还有 60 秒缓存，但账号页开一整天
-    // 就是上千次上游请求（每次额度查询都是真实的 snap-manager 调用）。
-    // 手动「刷新」按钮走 force，立即回源。
-    var now = Date.now();
-    if (!force && creditFetchedAt && now - creditFetchedAt < CREDIT_REFRESH_EVERY) {
-      return Promise.resolve();
-    }
-    creditFetchedAt = now;
     // 已经有了旧值就不要退回去显示「查询中…」： 5 秒一轮的自动刷新如果每次都
     // 清空再填，账号表会一直闪。只有第一次（还没有任何额度快照时）才置 loading。
     var seeded = false;
@@ -606,32 +521,14 @@
           ? { loading:false, ok:true, credit:x.credit }
           : { loading:false, ok:false, error:x.error };
       });
-      creditFetchedAt = Date.now();
       updateCreditCells();
     }).catch(function(e){
-      // 失败别等满 5 分钟：置成「快到期」，下一轮（约 1 分钟后）再试一次。
-      creditFetchedAt = Date.now() - CREDIT_REFRESH_EVERY + 60 * 1000;
       var msg = (e && e.message) || "查询失败";
       accts.forEach(function(a){ creditState[a.id] = { loading:false, ok:false, error:msg }; });
       updateCreditCells();
       toast("查询积分额度失败：" + msg, "err");
     }).then(function(){ creditLoading = null; });
     return creditLoading;
-  }
-
-  // usageByAccount 是「今日各账号消耗积分」（来自 /admin/api/usage?days=1）。
-  // 账号页靠它在额度格子里补一句「今日消耗」，与快照的累计已用互补。
-  var usageByAccount = {};
-
-  function loadUsageForAccounts(){
-    return api("/admin/api/usage?days=1").then(function(d){
-      var m = {};
-      (d.by_account || []).forEach(function(r){
-        if (r.account_id) m[r.account_id] = (m[r.account_id] || 0) + (r.credits || 0);
-      });
-      usageByAccount = m;
-      updateCreditCells();
-    }).catch(function(){ /* 静默：额度本身更重要 */ });
   }
 
   // updateCreditCells 只重写账号表里那一个「积分额度」单元格。
@@ -692,7 +589,6 @@
     bar.children[0].style.width = pct.toFixed(1) + "%";
 
     var bits = ["已用 " + fmtNum(used)];
-    if (usageByAccount[a.id] > 0) bits.push("今日 " + fmtCredits(usageByAccount[a.id]) + " 积分");
     if (info.expiring) bits.push("即将到期 " + fmtNum(info.expiring));
     if (info.reset_date) bits.push("重置 " + info.reset_date);
     if (info.status && info.status !== "active") bits.push(info.status);
@@ -889,7 +785,7 @@
       var filtered = $("#logStatus").value || $("#logClass").value || $("#logQ").value.trim();
       tb.textContent = "";
       logRowSigs = [];
-      tb.appendChild(emptyRow(11, filtered ? "没有匹配的日志（试试清空筛选条件）" : "暂无日志"));
+      tb.appendChild(emptyRow(10, filtered ? "没有匹配的日志（试试清空筛选条件）" : "暂无日志"));
       return;
     }
     // 先把行放到池子里：签名相同的旧行直接复用，剩下的现建。
@@ -935,28 +831,8 @@
     if (l.attempts > 1) lat += " · " + l.attempts + "次";
     var errCell = cell(l.err || "", "muted trunc");
     if (l.err) errCell.title = l.err;
-    // 积分：upstream = 上游账单（准确）；estimate = 本地估算（带 ≈）；
-    // 空来源且为 0 表示这次请求没计费（失败 / 未走到上游）。
-    var creditTxt = "—", creditTitle = "";
-    if (l.credits > 0) {
-      creditTxt = (l.credit_source === "estimate" ? "≈" : "") + fmtCredits(l.credits);
-      creditTitle = l.credit_source === "estimate"
-        ? "本地估算（上游账单查询失败）"
-        : "上游账单口径";
-      if (l.in_tokens || l.out_tokens) {
-        creditTitle += " | 输入 " + fmtNum(l.in_tokens) + " token（缓存 " + fmtNum(l.cached_tokens || 0) + "）";
-        creditTitle += " | 输出 " + fmtNum(l.out_tokens) + " token";
-      }
-    } else if (l.credit_source === "upstream") {
-      creditTxt = "0"; creditTitle = "上游账单口径（不足 0.01 积分）";
-    }
-    if (l.upstream_msg_id) {
-      creditTitle += (creditTitle ? " | " : "") + "上游消息 ID: " + l.upstream_msg_id;
-    }
-    var creditCellEl = cell(creditTxt, "mono");
-    if (creditTitle) creditCellEl.title = creditTitle;
     return row([
-      cell(fmtTime(l.time), "muted"), cell(l.model, "mono"), creditCellEl, cell(l.stream ? "是" : "否", "mono"),
+      cell(fmtTime(l.time), "muted"), cell(l.model, "mono"), cell(l.stream ? "是" : "否", "mono"),
       st, cls, cell(lat, "mono"), cell(l.prompt_len + " / " + l.output_len, "mono"),
       cell(l.account, "mono"), cell(l.key, "mono"), errCell
     ]);
@@ -1065,13 +941,12 @@
       if (changed("keys", keysSig(d.keys))) renderKeys(d);
       if (changed("settings", d.settings || {})) renderSettings(d.settings || {});
       if (changed("build", d.build || {})) renderBuild(d.build || {});
-      renderUptime(d.uptime_seconds);
       if (!opts.silent) loadHealth();
       var now = new Date();
       var p2 = function(n){ return (n < 10 ? "0" : "") + n; };
       $("#lastSync").textContent = "已更新 " + p2(now.getHours()) + ":" + p2(now.getMinutes()) + ":" + p2(now.getSeconds());
       // 账号页可见时补一次额度（首次进页签时 refresh 可能还没回来）
-      if ($("#tab-accounts").classList.contains("on")) { loadCredits(false); loadUsageForAccounts(); }
+      if ($("#tab-accounts").classList.contains("on")) loadCredits(false);
       // 接入页的密钥/模型可能刚变
       if ($("#tab-guide").classList.contains("on")) renderGuide();
     }).catch(function(e){
@@ -1135,8 +1010,6 @@
     if ($("#logClass").value) p.set("class", $("#logClass").value);
     var q = $("#logQ").value.trim();
     if (q) p.set("q", q);
-    var minCredits = parseFloat($("#logMinCredits").value);
-    if (minCredits > 0) p.set("min_credits", String(minCredits));
     return p.toString();
   }
   function refreshLogs(silent){
@@ -1239,692 +1112,69 @@
       .catch(function(e){ toast("采样加载失败：" + e.message, "err"); });
   }
 
-  // --- 用量页 ---
-
-  // lastUsageData 缓存最近一次用量响应：切「请求 / 积分 / token」指标只重画，
-  // 不重新请求（changed() 守卫会让「数据没变」的刷新跳过渲染）。
-  var lastUsageData = null;
+  // --- 用量趋势 ---
 
   function refreshUsage(){
-    var days = parseInt($("#usageDays").value, 10) || 1;
-    var hours = selectedHours();
-    return api("/admin/api/usage?days=" + days + "&hours=" + hours).then(function(d){
-      lastUsageData = d;
+    var days = parseInt($("#usageDays").value, 10) || 7;
+    return api("/admin/api/usage?days=" + days).then(function(d){
       if (!changed("usage", d)) return;
       renderUsage(d);
     }).catch(function(){ /* 自动刷新时静默 */ });
   }
 
-  // ---- 用量页 ----
-  //
-  // 数据全部来自 /admin/api/usage：服务端已经算好 total / by_hour / by_day /
-  // by_model / by_account / actual，前端只拼表格和画柱子 —— 口径只有服务端
-  // 一处，避免 JS 里再 reduce 出第二套数。
+  function renderUsage(d){
+    var rows = d.rows || [];
+    var days = d.days || 7;
+    var byDay = {};
+    rows.forEach(function(r){ byDay[r.day] = (byDay[r.day] || 0) + r.requests; });
 
-  // pctOf 是「占比」；分母为 0 时给破折号，别显示 0%（看起来像全没命中）。
-  function pctOf(part, total) {
-    return total > 0 ? Math.round(part / total * 100) + "%" : "—";
-  }
-
-  // avgMs 把「耗时之和 / 请求数」变成人读的平均延迟。
-  function avgMs(sum, n) {
-    // 老数据（升级前记录的日志）没有 latency_ms，别把它显示成 0 ms。
-    if (!n || !sum) return "—";
-    var v = sum / n;
-    return v >= 1000 ? (v / 1000).toFixed(1) + " s" : Math.round(v) + " ms";
-  }
-
-  // tpsOf 是平均吐字速度（输出 token / 秒）。
-  //
-  // 分母用整请求耗时：它包含首字等待，所以这是「平均」而不是「生成阶段峰值」。
-  // 旧数据没有 latency_ms / out_tokens 时给破折号。
-  function tpsOf(outTokens, latencyMS) {
-    if (!outTokens || !latencyMS) return "—";
-    var v = outTokens / (latencyMS / 1000);
-    return v >= 100 ? v.toFixed(0) : v.toFixed(1);
-  }
-
-  // niceCeil 把任意正数向上取到 1/2/5 × 10^n，给 Y 轴刻度用。
-  function niceCeil(v) {
-    if (!(v > 0)) return 1;
-    var exp = Math.floor(Math.log10(v));
-    var base = Math.pow(10, exp);
-    var f = v / base;
-    var nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
-    return nf * base;
-  }
-
-  // pad2 是两位补零（小时 / 月日都要用）。
-  function pad2(n) { return (n < 10 ? "0" : "") + n; }
-
-  function renderUsageKpis(d) {
-    var t = d.total || {};
-    var tps = tpsOf(t.timed_out_tokens || 0, t.out_latency_ms || 0);
-    renderKpisInto("#usageKpis", [
-      { k: "请求", v: fmtNum(t.requests || 0),
-        sub: t.failures ? "失败 " + fmtNum(t.failures) : "" },
-      { k: "输入 token", v: fmtNum(t.in_tokens || 0) },
-      { k: "输出 token", v: fmtNum(t.out_tokens || 0) },
-      { k: "缓存命中", v: pctOf(t.cached_tokens || 0, t.in_tokens || 0),
-        title: "命中缓存的输入 token 占比；越高越省钱" },
-      { k: "积分", v: fmtCredits(t.credits || 0) },
-      { k: "平均延迟", v: avgMs(t.latency_ms || 0, t.timed_requests || 0),
-        title: "只统计有耗时记录的请求（含失败）；记账查询发生在响应之后，不计入延迟" },
-      { k: "吐字速度", v: tps === "—" ? "—" : tps + " tok/s",
-        title: "输出 token ÷ 有输出的请求耗时（含首字等待），是平均吞吐" }
-    ]);
-  }
-
-  // 逐小时时序。后端只返回有数据的桶，这里补齐空小时，
-  // 否则柱子会把「昨晚 3 点没人用」挤掉，看着像一直在跑。
-  // selectedHours 把「今天」换算成小时数：从 00:00 到当前小时（含）。
-  function selectedHours() {
-    var v = $("#hourHours").value;
-    if (v === "today") return Math.min(72, new Date().getHours() + 1);
-    var n = parseInt(v, 10);
-    return n > 0 && n <= 72 ? n : 24;
-  }
-
-  // appendTicks 给一根纵轴画 n+1 个刻度（0..n*step），bottom 对齐柱区基线。
-  function appendTicks(el, step, n, fmt, H) {
-    for (var k = 0; k <= n; k++) {
-      var lbl = mk("span", "", fmt(step * k));
-      lbl.style.bottom = Math.round(H * k / n) + "px";
-      el.appendChild(lbl);
-    }
-  }
-
-  // 每小时时序：一张图里三条序列、三种图形、三根轴。
-  //
-  //   柱（蓝）   = 请求数   → 左轴（整数刻度）
-  //   实线（绿） = token    → 右轴（整数刻度）
-  //   虚线（黄） = 积分     → 左内轴（0.01 起，两位小数）
-  //
-  // 三个单位量纲差太远（请求个位数、token 上千、积分零点几），共用一根轴
-  // 必然有两条贴地；所以各自一根轴，颜色和图例一一对应。
-  // 折线用 SVG 铺在柱子上方：viewBox 固定 100×88 + preserveAspectRatio=none，
-  // 横坐标随容器宽度缩放，线宽用 non-scaling-stroke 保持像素不拉伸。
-  function renderHourChart(d) {
-    var hours = selectedHours();
-    var byHour = {};
-    (d.by_hour || []).forEach(function (r) { byHour[r.hour] = r; });
-
-    var now = new Date();
-    now.setMinutes(0, 0, 0);
+    // 补齐没有请求的日子：不补的话柱状图会跳过空白天，看起来像天天在涨。
     var list = [];
-    for (var i = hours - 1; i >= 0; i--) {
-      var dt = new Date(now.getTime() - i * 3600 * 1000);
-      var key = dt.getFullYear() + "-" + pad2(dt.getMonth() + 1) + "-" + pad2(dt.getDate()) +
-        "T" + pad2(dt.getHours());
-      var r = byHour[key] || {};
-      list.push({
-        key: key, date: (dt.getMonth() + 1) + "/" + dt.getDate(),
-        hh: pad2(dt.getHours()) + ":00",
-        requests: r.requests || 0,
-        credits: r.credits || 0,
-        tokens: (r.in_tokens || 0) + (r.out_tokens || 0)
-      });
+    var today = new Date();
+    var p2 = function(n){ return (n < 10 ? "0" : "") + n; };
+    for (var i = days - 1; i >= 0; i--) {
+      var dt = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+      var key = dt.getFullYear() + "-" + p2(dt.getMonth() + 1) + "-" + p2(dt.getDate());
+      list.push({ day: key, label: (dt.getMonth() + 1) + "/" + dt.getDate(), n: byDay[key] || 0 });
     }
+    var max = 1;
+    list.forEach(function(x){ if (x.n > max) max = x.n; });
 
-    var maxReq = 0, maxTok = 0, maxCred = 0;
-    list.forEach(function (x) {
-      if (x.requests > maxReq) maxReq = x.requests;
-      if (x.tokens > maxTok) maxTok = x.tokens;
-      if (x.credits > maxCred) maxCred = x.credits;
-    });
-
-    var H = 88; // 柱区像素高度（与 CSS 的 .usage-grid / .usage-lines 一致）
-    var reqStep = Math.max(1, Math.ceil(niceCeil(maxReq / 4)));
-    var tokStep = Math.max(1, Math.ceil(niceCeil(maxTok / 4)));
-    var credStep = Math.max(0.01, niceCeil(maxCred / 4));
-    var reqTop = reqStep * 4, tokTop = tokStep * 4, credTop = credStep * 4;
-    var step = Math.max(1, Math.ceil(hours / 12));
-
-    var plot = $("#hourChart"), axis = $("#hourAxis");
-    var yReq = $("#hourYAxis"), yTok = $("#hourYTokens"), yCred = $("#hourYCredit");
-    var mod = hours > 48 ? " ultra" : hours > 24 ? " dense" : "";
-    plot.className = "usage-plot" + mod;
-    axis.className = "usage-axis" + mod;
-    plot.textContent = "";
-    axis.textContent = "";
-    yReq.textContent = "";
-    yTok.textContent = "";
-    yCred.textContent = "";
-
-    // 网格线按「请求数」轴的刻度画（左轴是主刻度）。
-    var grid = mk("div", "usage-grid");
-    for (var t = 1; t < 4; t++) {
-      var line = mk("i");
-      line.style.bottom = Math.round(H * t / 4) + "px";
-      grid.appendChild(line);
-    }
-    plot.appendChild(grid);
-
-    appendTicks(yReq, reqStep, 4, function (v) { return fmtNum(Math.round(v)); }, H);
-    appendTicks(yTok, tokStep, 4, function (v) { return fmtNum(Math.round(v)); }, H);
-    appendTicks(yCred, credStep, 4, function (v) { return v.toFixed(2); }, H);
-
-    var n = list.length;
-    var NS = "http://www.w3.org/2000/svg";
-    var svg = document.createElementNS(NS, "svg");
-    svg.setAttribute("class", "usage-lines");
-    svg.setAttribute("viewBox", "0 0 100 88");
-    svg.setAttribute("preserveAspectRatio", "none");
-    var pts = function (get, top) {
-      var out = [];
-      for (var i = 0; i < n; i++) {
-        var v = get(list[i]);
-        var y = top > 0 ? H - Math.min(1, v / top) * H : H;
-        out.push(((i + 0.5) * 100 / n).toFixed(3) + "," + y.toFixed(2));
-      }
-      return out.join(" ");
-    };
-    var tokPts = pts(function (x) { return x.tokens; }, tokTop);
-    var area = document.createElementNS(NS, "polygon");
-    area.setAttribute("class", "tok-area");
-    area.setAttribute("points", "0,88 " + tokPts + " 100,88");
-    svg.appendChild(area);
-    var tokLine = document.createElementNS(NS, "polyline");
-    tokLine.setAttribute("class", "tok");
-    tokLine.setAttribute("points", tokPts);
-    svg.appendChild(tokLine);
-    var credLine = document.createElementNS(NS, "polyline");
-    credLine.setAttribute("class", "cred");
-    credLine.setAttribute("points", pts(function (x) { return x.credits; }, credTop));
-    svg.appendChild(credLine);
-    plot.appendChild(svg);
-
-    list.forEach(function (x, idx) {
-      var v = x.requests;
-      var col = mk("div", "usage-bar" + (v > 0 ? "" : " zero"));
-      col.title = x.date + " " + x.hh + "：" + fmtNum(x.requests) + " 次请求 · " +
-        fmtCredits(x.credits) + " 积分 · " + fmtNum(x.tokens) + " token";
-      // 24 小时内柱子够宽，标上请求数；更密时只看悬停提示。
-      if (hours <= 24) col.appendChild(mk("div", "val", v > 0 ? fmtNum(v) : ""));
+    var box = $("#usageChart");
+    box.textContent = "";
+    list.forEach(function(x){
+      var col = mk("div", "usage-bar" + (x.n ? "" : " zero"));
+      col.title = x.day + "：" + x.n + " 次请求";
+      col.appendChild(mk("div", "val", x.n ? String(x.n) : ""));
       var bar = mk("div", "bar");
-      bar.style.height = Math.max(2, Math.round(Math.min(1, v / reqTop) * H)) + "px";
+      bar.style.height = Math.max(2, Math.round(x.n / max * 88)) + "px";
       col.appendChild(bar);
-      plot.appendChild(col);
-      axis.appendChild(mk("span", "", idx % step === 0 ? x.hh : ""));
+      col.appendChild(mk("div", "lbl", x.label));
+      box.appendChild(col);
     });
-  }
 
-  function renderUsageModels(d) {
-    var models = d.by_model || [];
+    var byModel = {};
+    rows.forEach(function(r){
+      var m = byModel[r.model] || (byModel[r.model] = { model: r.model, requests: 0, chars_in: 0, chars_out: 0 });
+      m.requests += r.requests;
+      m.chars_in += r.chars_in;
+      m.chars_out += r.chars_out;
+    });
+    var models = Object.keys(byModel).map(function(k){ return byModel[k]; })
+      .sort(function(a, b){ return b.requests - a.requests; });
+
     var tb = $("#usageModels");
     tb.textContent = "";
     if (!models.length) {
-      tb.appendChild(emptyRow(8, "暂无数据（发一次请求后就有了）"));
+      tb.appendChild(emptyRow(4, "暂无数据（发一次请求后就有了）"));
       return;
     }
-    models.forEach(function (m) {
+    models.forEach(function(m){
       tb.appendChild(row([
         cell(m.model, "mono"), cell(fmtNum(m.requests), "mono"),
-        cell(fmtNum(m.in_tokens), "mono"), cell(fmtNum(m.out_tokens), "mono"),
-        cell(pctOf(m.cached_tokens, m.in_tokens), "mono"),
-        cell(fmtCredits(m.credits), "mono"),
-        cell(avgMs(m.latency_ms, m.timed_requests), "mono"),
-        cell(tpsOf(m.timed_out_tokens, m.out_latency_ms), "mono")
+        cell(fmtNum(m.chars_in), "mono"), cell(fmtNum(m.chars_out), "mono")
       ]));
     });
-  }
-
-  function renderUsageAccounts(d) {
-    var accounts = d.by_account || [];
-    var tb = $("#usageAccounts");
-    tb.textContent = "";
-    if (!accounts.length) {
-      tb.appendChild(emptyRow(8, "暂无数据"));
-      return;
-    }
-    accounts.forEach(function (a) {
-      var name = a.account || (a.account_id ? a.account_id : "（历史，无账号）");
-      var nameCell = cell(name, "mono");
-      if (a.account_id) nameCell.title = a.account_id;
-      tb.appendChild(row([
-        nameCell, cell(fmtNum(a.requests), "mono"),
-        cell(fmtNum(a.in_tokens), "mono"), cell(fmtNum(a.out_tokens), "mono"),
-        cell(pctOf(a.cached_tokens, a.in_tokens), "mono"),
-        cell(fmtCredits(a.credits), "mono"),
-        cell(avgMs(a.latency_ms, a.timed_requests), "mono"),
-        cell(tpsOf(a.timed_out_tokens, a.out_latency_ms), "mono")
-      ]));
-    });
-  }
-
-  function renderUsageActual(d) {
-    var actual = d.actual || [];
-    var tb = $("#usageActual");
-    tb.textContent = "";
-    if (!actual.length) {
-      tb.appendChild(emptyRow(3, "暂无快照差值（账号积分快照每 10 分钟刷新一次）"));
-      return;
-    }
-    actual.slice().sort(function (a, b) { return a.day < b.day ? 1 : -1; }).forEach(function (r) {
-      tb.appendChild(row([
-        cell(r.day, "mono"), cell(r.account || r.account_id, "mono"),
-        cell(fmtCredits(r.credits), "mono")
-      ]));
-    });
-  }
-
-  function renderUsageDaily(d) {
-    var actual = d.actual || [];
-    var actualByDay = {};
-    actual.forEach(function (r) { actualByDay[r.day] = (actualByDay[r.day] || 0) + (r.credits || 0); });
-
-    var dayMap = {};
-    (d.by_day || []).forEach(function (r) {
-      dayMap[r.day] = {
-        day: r.day, requests: r.requests || 0, credits: r.credits || 0,
-        in: r.in_tokens || 0, out: r.out_tokens || 0, cached: r.cached_tokens || 0,
-        latency: r.latency_ms || 0, timed: r.timed_requests || 0,
-        outLatency: r.out_latency_ms || 0, timedOut: r.timed_out_tokens || 0, actual: undefined
-      };
-    });
-    Object.keys(actualByDay).forEach(function (day) {
-      if (!dayMap[day]) {
-        dayMap[day] = { day: day, requests: 0, credits: 0, in: 0, out: 0, cached: 0,
-          latency: 0, timed: 0, outLatency: 0, timedOut: 0 };
-      }
-      dayMap[day].actual = actualByDay[day];
-    });
-    var list = Object.keys(dayMap).map(function (k) { return dayMap[k]; })
-      .sort(function (a, b) { return a.day < b.day ? 1 : -1; });
-
-    var tb = $("#usageDaily");
-    tb.textContent = "";
-    if (!list.length) {
-      tb.appendChild(emptyRow(10, "暂无数据"));
-      return;
-    }
-    list.forEach(function (x) {
-      var diff = x.actual === undefined ? null : x.actual - x.credits;
-      var diffTxt = diff === null ? "—" : (diff > 0 ? "+" : "") + diff.toFixed(2);
-      var diffCell = cell(diffTxt, "mono");
-      if (diff !== null && Math.abs(diff) > 0.05) {
-        diffCell.title = "上游实测与网关账单的差额（账号在 IDE / 其它客户端的消耗，或快照刷新滞后）";
-      }
-      tb.appendChild(row([
-        cell(x.day, "mono"), cell(fmtNum(x.requests), "mono"),
-        cell(fmtNum(x.in), "mono"), cell(fmtNum(x.out), "mono"),
-        cell(pctOf(x.cached, x.in), "mono"),
-        cell(fmtCredits(x.credits), "mono"),
-        cell(avgMs(x.latency, x.timed), "mono"),
-        cell(tpsOf(x.timedOut, x.outLatency), "mono"),
-        cell(x.actual === undefined ? "—" : fmtCredits(x.actual), "mono"),
-        diffCell
-      ]));
-    });
-  }
-
-  function renderUsage(d) {
-    renderUsageKpis(d);
-    renderHourChart(d);
-    renderUsageModels(d);
-    renderUsageAccounts(d);
-    renderUsageActual(d);
-    renderUsageDaily(d);
-
-    var t = d.total || {};
-    var summary = "网关账单 " + fmtCredits(t.credits || 0) + " 积分";
-    if (typeof d.actual_total === "number") summary += " · 上游实测 " + fmtCredits(d.actual_total) + " 积分";
-    setText($("#usageCreditSummary"), summary);
-  }
-
-  // ---- 余额页 ----
-  //
-  // 数据来自 /admin/api/balance-trend：服务端已经算好窗口净变化、今日 / 昨日、
-  // 消耗 / 到账与每日分桶，前端只负责画图和拼表格。
-  //
-  // 图是纯 SVG：viewBox 固定 1000×300 + preserveAspectRatio=none，
-  // 横坐标随容器缩放，线宽靠 non-scaling-stroke 保持像素宽（与用量页同一套做法）。
-  var BAL_H = 300;
-  // 最近一次 /balance-trend 的响应：resize 时按新宽度重画（SVG 用像素坐标）。
-  var balLastData = null;
-
-  // fmtBal 是积分水位的显示格式：整数 + 千分位（水位是连续量，小数没有意义）。
-  function fmtBal(v){
-    return fmtNum(Math.round(Number(v) || 0));
-  }
-  // fmtDelta 给变化量：带正负号，0 附近显示破折号（避免「+0」到处刷屏）。
-  function fmtDelta(v){
-    var n = Number(v) || 0;
-    if (Math.abs(n) < 0.5) return "—";
-    return (n > 0 ? "+" : "−") + fmtNum(Math.round(Math.abs(n)));
-  }
-  function deltaCls(v){
-    var n = Number(v) || 0;
-    return n > 0 ? "up" : n < 0 ? "down" : "";
-  }
-  // balIdx 把账号下标映射到 c0..c7，超过 8 个账号后循环使用（图例与表首条同色）。
-  function balIdx(i){ return "bal-c" + (i % 8); }
-
-  function refreshBalance(){
-    var days = parseInt($("#balDays").value, 10) || 30;
-    return api("/admin/api/balance-trend?days=" + days).then(function(d){
-      // 指纹只取数据字段：to 每次请求都变，不能进指纹，否则每 5 秒全量重建。
-      if (!changed("balance", {days: d.days, from: d.from, updated_at: d.updated_at,
-          summary: d.summary, accounts: d.accounts, daily: d.daily})) return;
-      balLastData = d;
-      renderBalance(d);
-    }).catch(function(){ /* 自动刷新时静默 */ });
-  }
-
-  function renderBalance(d){
-    var accounts = d.accounts || [];
-    var s = d.summary || {};
-
-    // --- 顶部总账 ---
-    var box = $("#balSummary");
-    box.textContent = "";
-    [
-      {k: "账号", v: fmtNum(s.accounts || 0)},
-      {k: "可用", v: (s.available || 0) + " / " + (s.accounts || 0)},
-      {k: "当前合计", v: fmtBal(s.current_total)},
-      {k: "窗口净变化", v: fmtDelta(s.net_change), cls: deltaCls(s.net_change)},
-      {k: "采样点数", v: fmtNum(s.samples || 0)}
-    ].forEach(function(x){
-      var c = mk("div", "cell");
-      c.appendChild(mk("div", "k", x.k));
-      c.appendChild(mk("div", "v" + (x.cls ? " " + x.cls : ""), x.v));
-      box.appendChild(c);
-    });
-
-    setText($("#balUpdated"), d.updated_at
-      ? "更新于 " + fmtShort(d.updated_at)
-      : "暂无采样");
-
-    // --- 图例 ---
-    var lg = $("#balLegend");
-    lg.textContent = "";
-    if (!accounts.length) {
-      lg.appendChild(mk("span", "muted", "账号池为空"));
-    } else {
-      accounts.forEach(function(a, i){
-        var it = mk("span", "item");
-        it.appendChild(mk("i", "sw " + balIdx(i)));
-        it.appendChild(mk("span", null, a.account || a.account_id));
-        lg.appendChild(it);
-      });
-    }
-
-    // --- 折线 ---
-    var plot = $("#balPlot"), yaxis = $("#balYAxis"), xaxis = $("#balXAxis");
-    plot.textContent = "";
-    yaxis.textContent = "";
-    xaxis.textContent = "";
-
-    var t0 = (d.from || 0) * 1000, t1 = (d.to || 0) * 1000;
-    var lo = Infinity, hi = -Infinity;
-    accounts.forEach(function(a){
-      (a.points || []).forEach(function(p){
-        if (p.v < lo) lo = p.v;
-        if (p.v > hi) hi = p.v;
-      });
-    });
-    var hasData = isFinite(lo) && isFinite(hi) && t1 > t0;
-
-    if (!hasData || !(d.summary || {}).samples) {
-      // 有账号快照但还没有走势（刚部署）：表格里有「当前」，图上只给提示。
-      plot.appendChild(mk("div", "bal-empty",
-        "还没有采样点。后台每 10 分钟刷新一次账号积分，半小时内就能看到曲线。"));
-    } else {
-      if (hi - lo < 1) { hi = lo + 1; }
-      // 上下各留 6% 余量，避免曲线贴边。轴不从 0 起（图下已标注）：
-      // 余额从几千掉到几百时，从 0 起画会把整段变化压成一条直线。
-      //
-      // 这里**不**把 lo 取整到 1/2/5 档：余额量级上千时，2,000 的步长会把
-      // 几千的波动全塞进一格（轴变成 0 / 2,000 / 4,000 …）。保留自然刻度
-      // （如 1,818 / 2,749 / …），与截图里的 927 / 2,087 / 3,246 同一种风格。
-      var pad = (hi - lo) * 0.06;
-      lo = Math.max(0, Math.floor((lo - pad) / 10) * 10);
-      hi = Math.ceil((hi + pad) / 10) * 10;
-      if (hi - lo < 4) hi = lo + 4;
-      var ticks = 4;
-      var step = (hi - lo) / ticks;
-      var span = hi - lo || 1;
-
-      // 网格 + 左轴刻度。
-      var grid = mk("div", "grid");
-      for (var k = 1; k <= ticks; k++) {
-        var line = mk("i");
-        line.style.bottom = (k / ticks * 100) + "%";
-        grid.appendChild(line);
-      }
-      plot.appendChild(grid);
-      for (var k = 0; k <= ticks; k++) {
-        var lbl = mk("span", null, fmtNum(Math.round(lo + step * k)));
-        lbl.style.bottom = (k / ticks * 100) + "%";
-        yaxis.appendChild(lbl);
-      }
-
-      // 用像素坐标而不是固定的 1000 宽逻辑坐标：点太少时要补圆点，
-      // viewBox 一拉伸圆就变成椭圆了。容器尺寸变了由 resize 重绘。
-      var W = Math.max(160, plot.clientWidth || 1000);
-      var NS = "http://www.w3.org/2000/svg";
-      var svg = document.createElementNS(NS, "svg");
-      svg.setAttribute("viewBox", "0 0 " + W + " " + BAL_H);
-      svg.setAttribute("preserveAspectRatio", "none");
-      svg.setAttribute("role", "img");
-      svg.setAttribute("aria-label", "各账号积分水位趋势");
-      var sx = function(ms){ return (ms - t0) / (t1 - t0) * W; };
-      var sy = function(v){ return (1 - Math.min(1, Math.max(0, (v - lo) / span))) * BAL_H; };
-      accounts.forEach(function(a, i){
-        var pts = a.points || [];
-        if (!pts.length) return;
-        var dstr = "";
-        pts.forEach(function(p, idx){
-          // 阶梯线：余额在两次采样之间保持不变，所以先横再竖。
-          if (idx === 0) {
-            dstr += "M" + sx(p.at * 1000).toFixed(1) + " " + sy(p.v).toFixed(1);
-          } else {
-            dstr += "H" + sx(p.at * 1000).toFixed(1) + "V" + sy(p.v).toFixed(1);
-          }
-        });
-        // 末值保持到「此刻」：两次采样之间余额不变，线停在半小时前会让人
-        // 以为数据断了。但只对「刚刚还在报数」的账号这样做——停更一天的账号
-        // 拉一条平线到右边缘，会被误读成「一天没掉分」。
-        if (t1 - pts[pts.length - 1].at * 1000 <= 2 * 3600 * 1000) {
-          dstr += "H" + sx(t1).toFixed(1);
-        }
-        var path = document.createElementNS(NS, "path");
-        path.setAttribute("d", dstr);
-        path.setAttribute("class", "line " + balIdx(i));
-        svg.appendChild(path);
-        // 点稀的时候补圆点：1 个点画不出线，2 个点会缩成一根竖线。
-        if (pts.length <= 60) {
-          pts.forEach(function(p, idx){
-            var c = document.createElementNS(NS, "circle");
-            c.setAttribute("cx", sx(p.at * 1000).toFixed(1));
-            c.setAttribute("cy", sy(p.v).toFixed(1));
-            // 末点放大一点：窗口很长、数据只有今天这一小段时，
-            // 至少能在右边缘看到「当前水位」这个点。
-            c.setAttribute("r", idx === pts.length - 1 ? "3.5" : "2.5");
-            c.setAttribute("class", "bal-dot " + balIdx(i));
-            svg.appendChild(c);
-          });
-        }
-      });
-      plot.appendChild(svg);
-
-      // 横轴：固定 6 个日期标签，覆盖整个窗口（近 7/14/30 天）。
-      var spanMs = t1 - t0;
-      for (var i = 0; i < 6; i++) {
-        var dt = new Date(t0 + spanMs * i / 5);
-        xaxis.appendChild(mk("span", null, (dt.getMonth() + 1) + "-" + pad2(dt.getDate())));
-      }
-    }
-
-    renderBalanceDaily(d, accounts);
-    renderBalanceTable(accounts);
-  }
-
-  // renderBalanceDaily 画「每日变化」：一天一列，列内按账号顺序并排。
-  // 零线在中间：正值向上（绿），负值向下（红），采样不完整时降低不透明度。
-  function renderBalanceDaily(d, accounts){
-    var daily = d.daily || [];
-    var box = $("#balDaily"), axis = $("#balDailyAxis");
-    box.textContent = "";
-    box.classList.remove("bal-daily-empty");
-    axis.textContent = "";
-
-    var yax = $("#balDailyYAxis");
-    if (!(d.summary || {}).samples) {
-      box.classList.add("bal-daily-empty");
-      box.appendChild(mk("div", "bal-empty", "还没有采样，无法计算日变化。"));
-      $("#balDailyLegend").textContent = "";
-      yax.textContent = "";
-      yax.style.visibility = "hidden";
-      return;
-    }
-    yax.style.visibility = "";
-    // 窗口里的每一天都占一列：没有采样的日子空着，只有有数据的那天出柱子。
-    // 这样横轴上的日期是连续的，不会因为前面几天没数据就只剩今天一列。
-    var days = daily;
-
-    // 正负分开量程：某一侧完全没有值时，零线贴到那一侧的边上。
-    // 否则整张图一半是空白，柱子离横轴老远（看起来像两个不相干的东西）。
-    var posMax = 0, negMax = 0;
-    days.forEach(function(row){
-      (row.cells || []).forEach(function(c){
-        var v = c.delta || 0;
-        if (v > posMax) posMax = v;
-        if (-v > negMax) negMax = -v;
-      });
-    });
-
-    // 零线永远居中：位置固定，柱子的长短才好跨天比较。
-    // 不做「按量级浮动」，也不因为某一侧为空就贴边。
-    var H = 208; // 容器 210px，留 2px 给零线
-    var posH = Math.round(H / 2);
-    var negH = H - posH;
-
-    // 左侧刻度：上限 / 0 / 下限（量程为 0 时只留一个 0）。
-    yax.textContent = "";
-    var ticks = [[0, negH + "px"]];
-    if (posMax > 0) ticks.push([posMax, "100%"]);
-    if (negMax > 0) ticks.push([-negMax, "0%"]);
-    ticks.forEach(function(t){
-      var lbl = mk("span", null, (t[0] > 0 ? "+" : t[0] < 0 ? "−" : "") + fmtNum(Math.round(Math.abs(t[0]))));
-      lbl.style.bottom = t[1];
-      yax.appendChild(lbl);
-    });
-
-    var labelStep = Math.max(1, Math.ceil(days.length / 10));
-
-    days.forEach(function(row, idx){
-      var col = mk("div", "bal-day");
-      var pos = mk("div", "pos");
-      var neg = mk("div", "neg");
-      pos.style.height = posH + "px";
-      neg.style.height = negH + "px";
-      (row.cells || []).forEach(function(c){
-        var v = c.delta || 0;
-        var bar = mk("div", "bar" + (v < 0 ? " loss" : v === 0 ? " flat" : "") + (c.complete || v === 0 ? "" : " partial"));
-        bar.title = row.day + " · " + (c.account || c.account_id) + "：" + fmtDelta(v) +
-          (c.complete ? "" : "（当天采样 " + (c.samples || 0) + " 个点，不完整）");
-        var half = v < 0 ? negH : posH;
-        var peak = v < 0 ? negMax : posMax;
-        bar.style.height = (v === 0 || !peak) ? "1px"
-          : Math.max(1, Math.round(Math.min(1, Math.abs(v) / peak) * (half - 2))) + "px";
-        // 当天一个采样点都没有的账号不放空白条：列宽已经按天定死，
-        // 空 div 会占位（其他账号的条被挤细），视觉上像是「掉了」。
-        if (!(c.samples > 0)) { return; }
-        (v < 0 ? neg : pos).appendChild(bar);
-      });
-      col.appendChild(pos);
-      col.appendChild(neg);
-      box.appendChild(col);
-
-      // 首尾两列一定带日期，中间按步长显示（否则最后一根柱子对不上任何刻度）。
-      var show = idx === 0 || idx === days.length - 1 || idx % labelStep === 0;
-      axis.appendChild(mk("span", null, show ? row.day.slice(5) : ""));
-    });
-
-    var lg = $("#balDailyLegend");
-    lg.textContent = "";
-    [["sw gain", "净增"], ["sw loss", "净减"], ["sw partial", "采样不完整"]].forEach(function(x){
-      var it = mk("span", "item");
-      it.appendChild(mk("i", x[0]));
-      it.appendChild(mk("span", null, x[1]));
-      lg.appendChild(it);
-    });
-    if (accounts.length) {
-      var order = accounts.map(function(a, i){ return (i + 1) + ". " + (a.account || a.account_id); }).join("  ");
-      lg.appendChild(mk("span", "muted", "组内左→右：" + order));
-    }
-  }
-
-  // renderBalanceTable 渲染「按账号」表：最后一行是合计。
-  function renderBalanceTable(accounts){
-    var tb = $("#balAccounts");
-    tb.textContent = "";
-    if (!accounts.length) {
-      tb.appendChild(emptyRow(10, "暂无账号"));
-      return;
-    }
-
-    // 两行格：上一行今日，下一行窗口合计（与截图里的「消耗* / 到账*」一致）。
-    function twoLine(today, total){
-      var td = mk("td", "cell-stack num");
-      td.appendChild(mk("b", null, fmtBal(today)));
-      td.appendChild(mk("span", "sub", fmtBal(total)));
-      return td;
-    }
-
-    var tot = {current: 0, net: 0, today: 0, yesterday: 0, spendToday: 0, spendWindow: 0,
-      gainToday: 0, gainWindow: 0, samples: 0, available: 0};
-
-    accounts.forEach(function(a, i){
-      var tr = mk("tr");
-      var nameCell = mk("td");
-      var wrap = mk("span", "bal-name " + balIdx(i));
-      wrap.appendChild(mk("i"));
-      var nm = mk("span", null, a.account || a.account_id);
-      nm.title = a.account_id;
-      wrap.appendChild(nm);
-      nameCell.appendChild(wrap);
-      tr.appendChild(nameCell);
-
-      tr.appendChild(cell(fmtBal(a.current), "num"));
-      tr.appendChild(cell(a.has_data ? fmtBal(a.min) : "—", "num"));
-      tr.appendChild(cell(a.has_data ? fmtBal(a.max) : "—", "num"));
-      tr.appendChild(cell(fmtDelta(a.net), "num " + deltaCls(a.net)));
-      tr.appendChild(cell(fmtDelta(a.today), "num " + deltaCls(a.today)));
-      tr.appendChild(cell(fmtDelta(a.yesterday), "num " + deltaCls(a.yesterday)));
-      tr.appendChild(twoLine(a.spend_today, a.spend_window));
-      tr.appendChild(twoLine(a.gain_today, a.gain_window));
-      tr.appendChild(cell(fmtNum(a.samples), "num"));
-      tb.appendChild(tr);
-
-      tot.current += a.current || 0;
-      tot.net += a.net || 0;
-      tot.today += a.today || 0;
-      tot.yesterday += a.yesterday || 0;
-      tot.spendToday += a.spend_today || 0;
-      tot.spendWindow += a.spend_window || 0;
-      tot.gainToday += a.gain_today || 0;
-      tot.gainWindow += a.gain_window || 0;
-      tot.samples += a.samples || 0;
-      if (a.has_data) tot.available++;
-    });
-
-    var tr = mk("tr", "total");
-    var first = mk("td");
-    first.appendChild(mk("div", null, "合计"));
-    first.appendChild(mk("div", "sub muted", "可用 " + tot.available + "/" + accounts.length));
-    tr.appendChild(first);
-    tr.appendChild(cell(fmtBal(tot.current), "num"));
-    tr.appendChild(cell("—", "num"));
-    tr.appendChild(cell("—", "num"));
-    tr.appendChild(cell(fmtDelta(tot.net), "num " + deltaCls(tot.net)));
-    tr.appendChild(cell(fmtDelta(tot.today), "num " + deltaCls(tot.today)));
-    tr.appendChild(cell(fmtDelta(tot.yesterday), "num " + deltaCls(tot.yesterday)));
-    tr.appendChild(twoLine(tot.spendToday, tot.spendWindow));
-    tr.appendChild(twoLine(tot.gainToday, tot.gainWindow));
-    tr.appendChild(cell(fmtNum(tot.samples), "num"));
-    tb.appendChild(tr);
   }
 
   // --- 接入指引 ---
@@ -2010,16 +1260,14 @@
       if (document.hidden) return;
       refresh({silent: true});
       if ($("#tab-logs").classList.contains("on")) { refreshLogs(true); refreshSamples(); }
-      if ($("#tab-usage").classList.contains("on")) refreshUsage();
-      if ($("#tab-balance").classList.contains("on")) refreshBalance();
+      if ($("#tab-overview").classList.contains("on")) refreshUsage();
     }, 5000);
     // 切回前台时立刻补一次，不然要等最多 5 秒。
     document.addEventListener("visibilitychange", function(){
       if (document.hidden) return;
       refresh({silent: true});
       if ($("#tab-logs").classList.contains("on")) { refreshLogs(true); refreshSamples(); }
-      if ($("#tab-usage").classList.contains("on")) refreshUsage();
-      if ($("#tab-balance").classList.contains("on")) refreshBalance();
+      if ($("#tab-overview").classList.contains("on")) refreshUsage();
     });
   }
 
@@ -2221,28 +1469,15 @@
   }
 
   // --- events ---
-  var TAB_IDS = { overview:1, usage:1, balance:1, accounts:1, keys:1, guide:1, logs:1, settings:1 };
+  var TAB_IDS = { overview:1, accounts:1, keys:1, guide:1, logs:1, settings:1 };
   var TAB_META = {
-    overview: { title:"概览", hint:"运行状态与总体用量", doc:"概览" },
-    usage:    { title:"用量", hint:"用量、积分与时序明细", doc:"用量" },
-    balance:  { title:"余额", hint:"各账号积分水位与每日变化", doc:"余额" },
+    overview: { title:"概览", hint:"运行状态与用量", doc:"概览" },
     accounts: { title:"账号", hint:"账号池、凭据与活动福利领取", doc:"账号" },
     keys:     { title:"密钥", hint:"API 密钥的签发与吊销", doc:"密钥" },
     guide:    { title:"接入", hint:"把客户端指向这个网关", doc:"接入" },
     logs:     { title:"日志", hint:"请求元信息与错误", doc:"日志" },
     settings: { title:"设置", hint:"运行参数与访问控制", doc:"设置" }
   };
-  // resetScrollTop 把窗口滚回顶部。
-  //
-  // 页面滚动在 window 上（.main 不单独滚），所以 window.scrollTo 就够；
-  // scrollingElement 一并归零是为了防某些浏览器在滚动锁定时的残留。
-  function resetScrollTop(){
-    window.scrollTo(0, 0);
-    if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
-  }
-
   // activateTab 是唯一的页签切换入口：同步 class / aria-selected / URL hash。
   // warm=false 时只切显示、不触发额外请求（首次加载用）。
   function activateTab(name, updateHash, warm){
@@ -2260,21 +1495,13 @@
     $("#pageTitle").textContent = meta.title;
     $("#pageHint").textContent = meta.hint;
     document.title = meta.doc + " · CodeArts2API 控制台";
-    // 页签之间不复用滚动位置：概览滚到底再切到用量，停在页面中间会
-    // 让人以为「新页签没内容」。切换即回到顶部（含 hashchange 的深链）。
-    resetScrollTop();
-    // 隐藏的 section 宽度是 0，KPI 列数只能在页面可见后算。
-    layoutKpis($("#kpis"));
-    layoutKpis($("#usageKpis"));
     if (updateHash) {
       try { history.replaceState(null, "", "#" + name); } catch { location.hash = name; }
     }
     if (warm === false) return;
     if (name === "logs") { refreshLogs(); refreshSamples(); }
-    if (name === "overview") { loadWelfare(); }
-    if (name === "usage") { refreshUsage(); }
-    if (name === "balance") { refreshBalance(); }
-    if (name === "accounts") { loadCredits(false); loadUsageForAccounts(); }
+    if (name === "overview") { loadWelfare(); refreshUsage(); }
+    if (name === "accounts") loadCredits(false);
     if (name === "guide") renderGuide();
   }
   document.querySelectorAll("nav button").forEach(function(b){
@@ -2728,10 +1955,6 @@
   });
   $("#logQ").addEventListener("search", function(){ refreshLogs(); });
   $("#usageDays").onchange = refreshUsage;
-  $("#balDays").onchange = refreshBalance;
-  on("#balRefresh", function(){ return refreshBalance(); });
-  $("#hourHours").onchange = refreshUsage;
-  $("#logMinCredits").oninput = function(){ refreshLogs(true); };
   // 示例块折叠：<details> 自带开关，这里只做「全部折叠/展开」批量操作。
   on("#toggleAllExamples", function(){
     var blocks = Array.prototype.slice.call(document.querySelectorAll("details.guide-block"));

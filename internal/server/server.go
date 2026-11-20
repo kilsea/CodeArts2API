@@ -65,31 +65,12 @@ type Server struct {
 	// modelSyncEvery 是定时同步模型清单的间隔（秒），仅用于控制台展示；
 	// 0 表示关闭周期性同步。atomic 是因为状态接口可能在任意时刻被请求。
 	modelSyncEvery atomic.Int64
-
-	// startedAt 是本进程的启动时刻，用来在控制台显示「服务运行时间」。
-	//
-	// 不能用 state.stats.started_at：那是「状态文件第一次初始化」的时间，
-	// 重启后不会变，显示成「已运行 8 小时」其实进程刚起。
-	startedAt time.Time
-
-	// creditLookup 控制是否反查上游账单（/v1/ops/credit/usage?type=msg）。
-	//
-	// New 里置真；测试直接构造 &Server{} 时保持关闭 —— 否则每个用例都会
-	// 多打一次网络，且断言里的「上游调用次数」全被污染。
-	creditLookup bool
-
-	// creditEvery 是后台积分快照的刷新周期，0 表示关闭（见 creditloop.go）。
-	creditEvery time.Duration
-
-	// creditFails 是刷新失败账号的退避表（id → 连续失败次数 / 下次重试时间）。
-	creditFails map[string]*creditFailure
 }
 
 // New 构造服务。
 func New(st *store.Store) *Server {
 	up := codearts.NewClient()
-	s := &Server{Store: st, Up: up, Reg: registry.New(), cache: newModelCache(),
-		creditLookup: true, creditEvery: creditRefreshDefault, startedAt: time.Now()}
+	s := &Server{Store: st, Up: up, Reg: registry.New(), cache: newModelCache()}
 	s.Cred = codearts.NewManager(up)
 	// 凭据解析拿到的是账号快照，所以续期 / 跟随 IDE 得到的新会话必须显式写回 store，
 	// 否则只对那一次请求生效（IDE 关闭后就再也拿不到）。
@@ -157,7 +138,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/api/keys", s.withAdminAuth(s.handleAdminKeys))
 	mux.HandleFunc("/admin/api/logs", s.withAdminAuth(s.handleAdminLogs))
 	mux.HandleFunc("/admin/api/usage", s.withAdminAuth(s.handleAdminUsage))
-	mux.HandleFunc("/admin/api/balance-trend", s.withAdminAuth(s.handleAdminBalanceTrend))
 	mux.HandleFunc("/admin/api/samples", s.withAdminAuth(s.handleAdminSamples))
 	mux.HandleFunc("/admin/api/samples/{rid}", s.withAdminAuth(s.handleAdminSampleDetail))
 	mux.HandleFunc("/admin/api/stats", s.withAdminAuth(s.handleAdminStats))
@@ -648,10 +628,4 @@ func writeErr(w http.ResponseWriter, code int, msg, typ string) {
 func intQuery(r *http.Request, key string) int {
 	n, _ := strconv.Atoi(r.URL.Query().Get(key))
 	return n
-}
-
-// floatQuery 读取浮点查询参数（解析失败按 0 处理）。
-func floatQuery(r *http.Request, key string) float64 {
-	v, _ := strconv.ParseFloat(r.URL.Query().Get(key), 64)
-	return v
 }

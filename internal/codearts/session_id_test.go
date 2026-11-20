@@ -55,7 +55,7 @@ func TestBaseHeadersReusesSessionID(t *testing.T) {
 	c := NewClient()
 	sess := &Session{DomainID: "dom-1", AccessKey: "AKAAA"}
 
-	h1 := c.baseHeaders(sess, "glm-5.3", "")
+	h1 := c.baseHeaders(sess, "glm-5.3")
 	sid := h1["x-ot-session-id"]
 	if sid == "" {
 		t.Fatal("x-ot-session-id 缺失")
@@ -70,7 +70,7 @@ func TestBaseHeadersReusesSessionID(t *testing.T) {
 		t.Error("model-id / model-name 应与请求体里的模型一致")
 	}
 
-	h2 := c.baseHeaders(sess, "glm-5.3", "")
+	h2 := c.baseHeaders(sess, "glm-5.3")
 	if h2["x-ot-session-id"] != sid {
 		t.Errorf("同一凭据的第二次请求换了 session id: %q → %q", sid, h2["x-ot-session-id"])
 	}
@@ -80,7 +80,7 @@ func TestBaseHeadersReusesSessionID(t *testing.T) {
 	}
 
 	// 没有凭据信息时回退为随机 ID，但两个头仍要一致
-	h4 := c.baseHeaders(&Session{}, "glm-5.3", "")
+	h4 := c.baseHeaders(&Session{}, "glm-5.3")
 	if h4["x-ot-session-id"] == "" || h4["x-ot-session-id"] != h4["user-session-id"] {
 		t.Errorf("回退路径的会话头不一致: %q / %q", h4["x-ot-session-id"], h4["user-session-id"])
 	}

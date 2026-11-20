@@ -306,19 +306,6 @@ type Account struct {
 	CreditExpiring    float64 `json:"credit_expiring,omitempty"`
 	CreditResetDate   string  `json:"credit_reset_date,omitempty"`
 	CreditRefreshedAt int64   `json:"credit_refreshed_at,omitempty"`
-	// 积分快照的完整数值（与 Expiring 一起写）。
-	//
-	// CreditUsed 是「真实已用积分」的锚点：后台快照循环每次刷新时拿它算增量，
-	// 累加进 state.credit_spend（按天 × 账号），用来和逐请求估算对账。
-	CreditTotal     float64 `json:"credit_total,omitempty"`
-	CreditUsed      float64 `json:"credit_used,omitempty"`
-	CreditRemaining float64 `json:"credit_remaining,omitempty"`
-	// CreditUsedAt 标记 CreditUsed 至少被写过一次（0 = 还没有基线）。
-	//
-	// 不能拿「CreditUsed > 0」当基线判据：额度重置后 Used 归零，之后第一次
-	// 增长（0 → x）就会被当成「没有基线」而永久丢失。旧状态文件里这个字段
-	// 是 0，升级后的第一次刷新只建立基线，不会把历史用量算到今天。
-	CreditUsedAt int64 `json:"credit_used_at,omitempty"`
 }
 
 // IdentityKey 返回账号的稳定身份键，供账号池去重与控制台合并使用。

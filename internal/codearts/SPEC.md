@@ -40,11 +40,6 @@ references: [adr-0001, adr-0005]
   `/snap-manager/v1/statistics/plugin`，从 `metrics[]` 里取 `usageTotalPackageCredit`；
   没有该指标表示账号不是积分套餐（token / 白名单 / 未开通），返回 `Available=false`
   并带上原因，而不是让控制台显示「0 积分」。
-- **逐请求积分用上游账单接口，不靠客户端自己乘价。** `FetchCreditUsage(kind=msg|session)`
-  打 `/v1/ops/credit/usage`，`data.creditCost` 是服务端算好的积分；请求侧的
-  `user-msg-id` 由 `WithMsgID` 指定，网关靠它把「这次推理」和「这次扣费」对上。
-  本地公式 `ModelPricing.Credits` 只做兜底，且与上游前端 `calculateTurnCredits` 一致
-  （`(in-cached)*input + cached*cache + out*output) / ratio / 1e6`）。
 - **凭据形态显式区分，不靠「有没有过期时间」猜。** `Session.CredentialKind` 区分 STS 临时凭据
   （零值，兼容旧状态文件）与 IAM 永久 AK/SK。永久凭据的 `ExpiresAt` 就是零值，
   `Valid()` 必须对它短路为 true，否则 110 分钟后账号永久失效且无法续期。
