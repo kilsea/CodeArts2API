@@ -7,8 +7,15 @@
 
 GO      ?= go
 BIN     ?= codearts2api
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X main.version=$(VERSION)
+
+# 版本号 = 构建日期 + 提交哈希（工作区有改动时加 -dirty）。
+# 不手工维护语义版本：这个项目是「跟着上游漂移」的网关，手工改版本号只会
+# 出现「版本说 0.2，行为是 0.3」的错位；日期+哈希能直接对应到某一次提交。
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DIRTY   ?= $(shell git status --porcelain 2>/dev/null | head -1)
+VERSION ?= $(shell date +%Y%m%d)-$(COMMIT)$(if $(DIRTY),-dirty)
+BUILT   ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILT)
 
 .PHONY: all build test vet vet-linux fmt lint race console check clean docker
 
@@ -48,4 +55,4 @@ clean:
 	rm -f $(BIN) $(BIN).exe
 
 docker:
-	docker build --build-arg VERSION=$(VERSION) -t $(BIN):$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) \n		--build-arg BUILT=$(BUILT) -t $(BIN):$(VERSION) .

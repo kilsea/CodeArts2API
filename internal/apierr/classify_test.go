@@ -86,3 +86,26 @@ func TestClassifyModerationBeforeClientRequest(t *testing.T) {
 		t.Error("审核拒绝必须分类为 moderation，不能被 client_request 吞掉")
 	}
 }
+
+// TestClassifyGatewayRequestErrors 网关自己判定的请求侧错误要归到 client_request。
+//
+// 回归背景：这些错误以前一律落到 internal，控制台按「参数」筛选时看不到
+// 「temperature 越界」「模型不存在」「background 不支持」这类明确的请求侧问题，
+// 日志里显示「内部」还会把排查方向带偏。
+func TestClassifyGatewayRequestErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"参数越界", &InvalidParamError{Param: "temperature", Reason: "temperature 必须在 0 到 2 之间"}, "client_request"},
+		{"不支持字段", &InvalidParamError{Param: "background", Reason: "background 暂不支持", Code: CodeUnsupportedParam}, "client_request"},
+		{"模型不存在", &ModelNotFound{Name: "gpt-4o"}, "client_request"},
+		{"响应 id 查不到", &ResponseNotFound{ID: "resp_x", Param: "previous_response_id"}, "client_request"},
+	}
+	for _, c := range cases {
+		if got := Classify(c.err); got != c.want {
+			t.Errorf("%s: Classify = %q，期望 %q", c.name, got, c.want)
+		}
+	}
+}

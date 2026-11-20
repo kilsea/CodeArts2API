@@ -24,6 +24,8 @@ func newTestServer(t *testing.T, accounts int, retries int) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 日志是 append-only 文件：不关句柄，Windows 上 TempDir 清理会失败。
+	t.Cleanup(st.Close)
 	st.UpdateSettings(func(s *store.Settings) {
 		s.MaxRetries = retries
 		// 这个 helper 的用例关心的是重试序列，不是限流；默认关掉以免

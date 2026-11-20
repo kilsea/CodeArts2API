@@ -100,6 +100,12 @@ func stripLiteralsAndComments(s string) string {
 		switch c := s[i]; c {
 		case jsSQuote, jsBacktick:
 			i = skipString(s, i)
+		case jsQuote:
+			// 双引号串要整体跳过再回填一对引号参与计数：否则串里的 `//`
+			// （比如 "https://example.com"）会被下面的注释规则截断，
+			// 一个完全合法的 URL 字面量会被误报成「跨行字符串」。
+			i = skipString(s, i)
+			b.WriteString(`""`)
 		case '/':
 			if i+1 < len(s) && s[i+1] == '/' {
 				return b.String()

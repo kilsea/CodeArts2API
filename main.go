@@ -28,7 +28,12 @@ import (
 )
 
 // version 由构建时注入：-ldflags "-X main.version=1.0.0"
-var version = "dev"
+// commit / buildTime 同理，用于「确认现在跑的到底是哪个构建」。
+var (
+	version   = "dev"
+	commit    = ""
+	buildTime = ""
+)
 
 func main() {
 	var (
@@ -47,7 +52,11 @@ func main() {
 	flag.Parse()
 
 	if *showVer {
-		fmt.Println("codearts2api", version)
+		// 版本号本身已经是「日期-哈希」，这里只补构建时间，方便确认是哪一次构建。
+		fmt.Printf("codearts2api %s\n", version)
+		if buildTime != "" {
+			fmt.Printf("  built %s (commit %s)\n", buildTime, commit)
+		}
 		return
 	}
 
@@ -59,6 +68,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("打开状态文件失败: %v", err)
 	}
+	defer st.Close()
 	log.Printf("状态文件: %s", st.Path())
 
 	// 收敛 v0.1.7 及之前按 AK 去重留下的重复账号：同一华为账号（DomainID 相同）
@@ -109,12 +119,30 @@ func main() {
 
 	srv := server.New(st)
 	srv.ApplyIdentity()
+	server.SetBuildInfo(version, commit, buildTime)
 
 	// 后台任务：每日自动领取运营活动福利 + 积分快照刷新（供「到期积分优先」调度）
 	bgCtx, stopBG := context.WithCancel(context.Background())
 	defer stopBG()
 	srv.StartClaimLoop(bgCtx)
 	srv.StartCreditLoop(bgCtx)
+
+	// 统计/用量的延迟落盘：Record 只改内存，这里每 30 秒把脏状态刷一次。
+	// 不刷的话重启后「今日请求数」「用量趋势」会归零。
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-bgCtx.Done():
+				return
+			case <-t.C:
+				if err := st.FlushIfDirty(); err != nil {
+					log.Printf("保存统计失败（下一轮重试）: %v", err)
+				}
+			}
+		}
+	}()
 
 	// 后台刷新一次模型清单（不阻塞启动）
 	go func() {
@@ -162,6 +190,10 @@ func main() {
 	<-stop
 
 	log.Printf("正在关闭…")
+	// 先把统计/用量落盘，再关 HTTP：反过来的话正在收尾的请求会计进内存但丢掉。
+	if err := st.FlushIfDirty(); err != nil {
+		log.Printf("保存统计失败: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {

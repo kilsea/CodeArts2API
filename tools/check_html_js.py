@@ -49,6 +49,16 @@ def strip_literals_and_comments(s: str) -> str:
             while i < n and s[i] != "`":
                 i += 2 if s[i] == BS else 1
             i += 1
+        elif c == '"':
+            # 双引号串要整体剥掉再回填一对引号：否则串里的 `//`（比如
+            # "https://..."）会被下面那条注释规则截断，导致这一行的引号
+            # 计数变成奇数 —— 一个完全合法的 URL 字面量被误报成
+            # 「跨行字符串」。
+            i += 1
+            while i < n and s[i] != '"':
+                i += 2 if s[i] == BS else 1
+            i += 1
+            out.append(QUOTE * 2)
         elif c == "/" and i + 1 < n and s[i + 1] == "/":
             break
         else:

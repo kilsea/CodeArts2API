@@ -18,6 +18,7 @@
 | --- | --- | --- |
 | `POST /v1/chat/completions` | ✅ | OpenAI 兼容，流式 / 非流式 / tools |
 | `POST /v1/messages` | ✅ | Anthropic Messages，含 thinking signature |
+| `POST /v1/messages/count_tokens` | ✅ | 本地估算（与日志里的 `prompt_len` 同一口径），不打上游 |
 | `GET /v1/models` | ✅ | 上游清单 + 自定义别名 |
 | `POST /v1/responses` | ✅ | OpenAI Responses API（流式 / 非流式 / tools / `previous_response_id`） |
 | `POST /v1/embeddings` | ❌ | **未实现** |
@@ -25,7 +26,11 @@
 | `POST /v1/images/generations` | ❌ | 上游有多模态模型，但网关不做图像生成 |
 | `GET /metrics` | ✅ | Prometheus 文本格式（管理鉴权） |
 | `/admin/api/*` | ✅ | 控制台 API（管理鉴权 + 同源校验） |
-| `POST /admin/api/replay/<request-id>` | ✅ | 失败请求重放（需开采样，见 §7） |
+| `POST /admin/api/replay/<request-id>` | ✅ | 失败请求重放（需开采样，见 §9） |
+| `GET /admin/api/samples` | ✅ | 调试采样列表（最新在前；开关/采样率/目录/保留天数） |
+| `GET /admin/api/samples/<request-id>` | ✅ | 单条采样详情（脱敏后的请求体） |
+| `GET /admin/api/logs` | ✅ | 请求日志，**最新在前**；支持 `status`（精确/`4xx`）/ `class` / `model` / `q` / `since` / `limit` |
+| `GET /admin/api/usage` | ✅ | 用量趋势（按「天 + 模型」聚合，`?days=7`） |
 
 ---
 
@@ -215,19 +220,22 @@ Anthropic 侧：`{"type":"error","error":{"type":"…","message":"…","code":"�
 
 ---
 
-## 9. 采样与重放
+## 9. 调试采样与重放
 
-默认**不记录任何对话正文**。需要排障时：
+默认**不记录任何对话正文**。需要排障时在控制台「日志 → 调试采样」打开开关即可
+（**默认关闭**，热生效，不用重启）：
 
-```bash
-CODEARTS_DUMP_SAMPLE=100   # 1% 采样（1 = 全采）
-CODEARTS_DUMP_DIR=/var/lib/codearts2api/samples
-```
-
+- 采样率可选「全部 / 1/10 / 1/100」；
+- 落盘位置：`<状态文件目录>/samples/`，可用 `CODEARTS_DUMP_DIR` 改；
+- 文件按天切分：`requests-<YYYYMMDD>.jsonl`，单文件 8 MiB 封顶；
+- **保留 3 天，超过 3 天的文件自动整份删除**（含旧版遗留的 `requests.jsonl`）；
 - 存的是**改写前**的原始请求体（重放要复现客户端的真实行为）；
-- 脱敏：超长字符串（图片 base64）替换为 `[redacted N bytes]`；
-- 滚动：单文件 8 MiB、保留 5 份归档、权限 0600（非 Windows）；
+- 脱敏：超长字符串（图片 base64）替换为 `[redacted N bytes]`；权限 0600（非 Windows）；
+- 控制台：`GET /admin/api/samples` 列表（最新在前）、`GET /admin/api/samples/<id>` 详情；
 - 重放：`POST /admin/api/replay/<request-id>`（管理鉴权）。
+
+`CODEARTS_DUMP_SAMPLE` / `CODEARTS_DUMP_DIR` 仍然可用，但只决定**启动时**的初始值，
+运行期间以控制台设置为准（否则「页面上关了却还在写」会让人以为开关坏了）。
 
 ---
 

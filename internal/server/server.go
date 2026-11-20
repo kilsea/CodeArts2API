@@ -81,7 +81,19 @@ func New(st *store.Store) *Server {
 
 	// 请求采样：默认关闭。开启时采样文件放在状态文件同目录下的 samples/。
 	s.dumps = NewDumper(filepath.Dir(st.Path()))
+	// 持久化设置优先于环境变量的初始值（环境变量只决定启动默认）。
+	s.ApplyDebug()
 	return s
+}
+
+// ApplyDebug 把设置里的调试采样开关同步到采样器（热更新）。
+//
+// 环境变量 CODEARTS_DUMP_SAMPLE 只影响启动初始值；运行期间以控制台为准，
+// 否则「页面上关了却还在写」会让人以为开关坏了。
+func (s *Server) ApplyDebug() {
+	st := s.Store.Settings()
+	s.dumps.SetSampleRate(st.DebugCaptureSample)
+	s.dumps.SetEnabled(st.DebugCapture)
 }
 
 // Handler 返回完整路由。
@@ -100,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/models", s.withAuth(s.withRateLimit(errOpenAI, s.handleModels)))
 	mux.HandleFunc("/v1/chat/completions", s.withAuth(s.withRateLimit(errOpenAI, s.handleChatCompletions)))
 	mux.HandleFunc("/v1/messages", s.withAuth(s.withRateLimit(errAnthropic, s.handleAnthropicMessages)))
+	mux.HandleFunc("/v1/messages/count_tokens", s.withAuth(s.withRateLimit(errAnthropic, s.handleAnthropicCountTokens)))
 	// OpenAI Responses API（翻译到上游的 Chat Completions）
 	mux.HandleFunc("/v1/responses", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponses)))
 	mux.HandleFunc("/v1/responses/input_tokens", s.withAuth(s.withRateLimit(errOpenAI, s.handleResponsesInputTokens)))
@@ -111,6 +124,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/api/accounts", s.withAdminAuth(s.handleAdminAccounts))
 	mux.HandleFunc("/admin/api/keys", s.withAdminAuth(s.handleAdminKeys))
 	mux.HandleFunc("/admin/api/logs", s.withAdminAuth(s.handleAdminLogs))
+	mux.HandleFunc("/admin/api/usage", s.withAdminAuth(s.handleAdminUsage))
+	mux.HandleFunc("/admin/api/samples", s.withAdminAuth(s.handleAdminSamples))
+	mux.HandleFunc("/admin/api/samples/{rid}", s.withAdminAuth(s.handleAdminSampleDetail))
 	mux.HandleFunc("/admin/api/stats", s.withAdminAuth(s.handleAdminStats))
 	mux.HandleFunc("/admin/api/settings", s.withAdminAuth(s.handleAdminSettings))
 	mux.HandleFunc("/admin/api/checkin", s.withAdminAuth(s.handleAdminCheckin))
@@ -506,6 +522,8 @@ func sanitizedSettings(st store.Settings) map[string]any {
 		"ide_name":               st.IDEName,
 		"ide_version":            st.IDEVersion,
 		"language":               st.Language,
+		"debug_capture":          st.DebugCapture,
+		"debug_capture_sample":   st.DebugCaptureSample,
 		"admin_password_set":     st.AdminPassword != "",
 	}
 }
@@ -544,10 +562,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "ok",
-		"accounts": len(accts),
-		"ready":    ok,
-		"models":   len(s.Reg.List(nil)),
+		"status":     "ok",
+		"accounts":   len(accts),
+		"ready":      ok,
+		"models":     len(s.Reg.List(nil)),
+		"version":    BuildVersion,
+		"commit":     BuildCommit,
+		"build_time": BuildTime,
 	})
 }
 

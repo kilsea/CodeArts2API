@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"codearts2api/internal/codearts"
@@ -91,6 +92,16 @@ type Settings struct {
 	//     ssh -N -L <LoginPort>:127.0.0.1:<LoginPort> user@server
 	LoginPort int `json:"login_port"`
 
+	// DebugCapture 开启本地请求采样：把脱敏后的请求体落盘到
+	// <状态文件目录>/samples/requests.jsonl，供控制台查看与失败重放。
+	//
+	// 默认关闭 —— 这是唯一会把对话正文写到磁盘上的开关，
+	// 只在排障时临时打开。落盘内容仍会脱敏（超长字符串 / 图片 base64 替换）。
+	DebugCapture bool `json:"debug_capture"`
+	// DebugCaptureSample 是采样率分母：1 = 全采，n = 1/n。默认全采
+	// （排障时往往只需要那一次，抽样反而容易漏掉）。
+	DebugCaptureSample int `json:"debug_capture_sample"`
+
 	// 上游身份头（留空用与 26.9.902 对齐的缺省值）
 	PluginName    string `json:"plugin_name"`
 	PluginVersion string `json:"plugin_version"`
@@ -147,7 +158,13 @@ type State struct {
 	Keys     []*APIKey           `json:"keys"`
 	Settings Settings            `json:"settings"`
 	Stats    Stats               `json:"stats"`
-	Logs     []LogEntry          `json:"logs"`
+	// Logs 是内存里的请求日志，**不再写入 state.json**。
+	//
+	// 持久化改走同目录的 <state>.logs.jsonl（append-only）：状态文件每次保存都是
+	// 全量重写，几百条日志会让「改个设置」也多写几十 KB，还要和 STS 凭据
+	// 抢同一个文件的写锁。旧版本（v2 及以前）写在 state.json 里的日志会在
+	// 启动时一次性迁到 JSONL（见 initLogs）。
+	Logs []LogEntry `json:"-"`
 	// Capabilities 是实测到的模型能力快照（key 为小写模型 ID）。
 	//
 	// 落盘的原因：上游行为会漂移（glm-5.3 曾只支持流式，后来又支持非流式），
@@ -156,6 +173,11 @@ type State struct {
 	//
 	// 新增字段带 omitempty，旧状态文件能直接加载（无需升版本）。
 	Capabilities map[string]registry.Capability `json:"capabilities,omitempty"`
+	// Usage 是按「天 + 模型」聚合的用量（保留 UsageKeepDays 天）。
+	//
+	// 只存聚合值，不存单条请求：趋势图需要的是「今天花了多少」，
+	// 而逐条记录会让状态文件无上限增长。
+	Usage []UsageRow `json:"usage,omitempty"`
 }
 
 // Store 是带锁的状态容器。
@@ -184,6 +206,15 @@ type Store struct {
 	//
 	// 不持久化：进程重启后归零，重新累计。
 	slots map[string]chan struct{}
+	// logs 是请求日志的 append-only 落盘器（nil 表示不可用）。
+	logs *logSink
+	// legacyLogs 是旧版 state.json 里的日志（v2 及以前），仅供启动迁移。
+	legacyLogs []LogEntry
+	// dirty 标记统计/用量有变更但还没落盘（见 autosave.go）。
+	dirty atomic.Bool
+	// flushMu / flushTimer 合并高频落盘：连续对话不该每个请求都全量重写状态文件。
+	flushMu    sync.Mutex
+	flushTimer *time.Timer
 }
 
 // DefaultSettings 返回默认设置。
@@ -210,23 +241,33 @@ func DefaultSettings() Settings {
 		ClaimAfterMinute:     5,
 		WriteBackToIDE:       true,
 		LiveTTLSeconds:       10,
-		PluginName:           codearts.PluginName,
-		PluginVersion:        codearts.PluginVersion,
-		IDEName:              codearts.IDEName,
-		IDEVersion:           codearts.IDEVersion,
-		Language:             "zh-cn",
+		// 调试采样默认关闭（不落对话正文）；打开时默认全采。
+		DebugCapture:       false,
+		DebugCaptureSample: 1,
+		PluginName:         codearts.PluginName,
+		PluginVersion:      codearts.PluginVersion,
+		IDEName:            codearts.IDEName,
+		IDEVersion:         codearts.IDEVersion,
+		Language:           "zh-cn",
 	}
 }
 
 // Open 载入（或初始化）状态文件。
 func Open(path string) (*Store, error) {
-	s := &Store{path: path, st: &State{Settings: DefaultSettings()}}
+	s := &Store{path: path, st: &State{Settings: DefaultSettings()}, logs: newLogSink(path)}
 	raw, err := os.ReadFile(path)
 	switch {
 	case err == nil:
 		if err := json.Unmarshal(raw, &s.st); err != nil {
 			return nil, fmt.Errorf("状态文件解析失败: %w", err)
 		}
+		// Logs 字段现在带 json:"-"（不再写进状态文件），但旧文件里还有。
+		// 单独解一次，供 initLogs 一次性迁移。
+		var legacy struct {
+			Logs []LogEntry `json:"logs"`
+		}
+		_ = json.Unmarshal(raw, &legacy)
+		s.legacyLogs = legacy.Logs
 		if err := s.migrate(); err != nil {
 			return nil, err
 		}
@@ -240,7 +281,33 @@ func Open(path string) (*Store, error) {
 	default:
 		return nil, err
 	}
+	s.initLogs()
 	return s, nil
+}
+
+// initLogs 载入最近的请求日志，并把旧版 state.json 里的日志迁到 JSONL。
+//
+// 日志不落 state.json 之后，「重启不丢」靠这个文件；迁移只做一次：
+// JSONL 里有内容就以它为准。
+func (s *Store) initLogs() {
+	keep := s.st.Settings.LogKeep
+	loaded := s.logs.Load(keep)
+	if len(loaded) == 0 && len(s.legacyLogs) > 0 {
+		for _, e := range s.legacyLogs {
+			s.logs.Append(e)
+		}
+		loaded = s.legacyLogs
+		if keep > 0 && len(loaded) > keep {
+			loaded = loaded[len(loaded)-keep:]
+		}
+	}
+	s.legacyLogs = nil
+	s.st.Logs = loaded
+}
+
+// Close 释放日志文件句柄（进程退出时调用）。
+func (s *Store) Close() {
+	s.logs.Close()
 }
 
 // migrate 把历史状态文件升级到 StateVersion。
@@ -1127,23 +1194,32 @@ func (s *Store) Logs(limit int) []LogEntry {
 // Record 记录一次请求结果并更新统计。
 func (s *Store) Record(e LogEntry, outChars int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.st.Stats.TotalRequests++
 	if e.Status >= 400 || e.Err != "" {
 		s.st.Stats.FailedRequests++
 	}
 	s.st.Stats.TotalCharsOut += int64(outChars)
+	s.bumpUsageLocked(e, outChars)
 	s.st.Logs = append(s.st.Logs, e)
 	if keep := s.st.Settings.LogKeep; keep > 0 && len(s.st.Logs) > keep {
 		s.st.Logs = s.st.Logs[len(s.st.Logs)-keep:]
 	}
+	s.mu.Unlock()
+
+	// 统计/用量变了：标记脏 + 安排一次合并落盘（每条都 Save 是全量重写，太贵；
+	// 只靠后台定时器又会让强杀进程丢掉最近一段计数）。
+	s.dirty.Store(true)
+	s.scheduleFlush()
+	// 落盘在锁外做：日志文件的 Sync 不能阻塞所有读接口（控制台每秒轮询）。
+	s.logs.Append(e)
 }
 
-// ClearLogs 清空日志。
+// ClearLogs 清空内存与落盘的日志。
 func (s *Store) ClearLogs() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.st.Logs = nil
+	s.mu.Unlock()
+	s.logs.Truncate()
 }
 
 // ClearStats 重置统计。

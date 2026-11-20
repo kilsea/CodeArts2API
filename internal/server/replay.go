@@ -30,7 +30,7 @@ func (s *Server) handleAdminReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.dumps.Enabled() {
 		writeErr(w, http.StatusConflict,
-			"请求采样未开启：请设置 CODEARTS_DUMP_SAMPLE=<n>（如 1 表示全采）后重启网关",
+			"请求采样未开启：请在控制台「日志 → 调试采样」打开开关（默认关闭，保留 3 天）",
 			"invalid_request_error")
 		return
 	}
@@ -62,6 +62,8 @@ func (s *Server) handleAdminReplay(w http.ResponseWriter, r *http.Request) {
 	switch entry.Path {
 	case "/v1/messages":
 		s.handleAnthropicMessages(rec, req)
+	case "/v1/responses":
+		s.handleResponses(rec, req)
 	default:
 		s.handleChatCompletions(rec, req)
 	}

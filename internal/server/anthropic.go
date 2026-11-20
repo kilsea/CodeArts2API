@@ -375,3 +375,56 @@ func writeSSE(w http.ResponseWriter, f http.Flusher, event string, payload map[s
 func writeAnthropicErr(w http.ResponseWriter, code int, typ, msg string) {
 	writeAnthropicAPIErr(w, apierr.Error{Status: code, Anthropic: typ}, msg)
 }
+
+// handleAnthropicCountTokens 是 POST /v1/messages/count_tokens 的入口。
+//
+// 为什么需要它：Claude Code 与部分 Anthropic SDK 在发请求前会先问「这段上下文
+// 有多少 token」，拿不到就退化成自己猜，或者直接报错。以前这个路径是 404。
+//
+// 实现是**本地估算**（不走上游、不消耗积分）：把请求按 /v1/messages 同一套规则
+// 翻译成 Chat 体，再用与日志里 prompt_len 相同的估算函数 —— 两处数字必须一致，
+// 否则控制台看到的长度和客户端拿到的 token 数会对不上。
+func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAnthropicErr(w, http.StatusMethodNotAllowed, "invalid_request_error", "仅支持 POST")
+		return
+	}
+	r = withRequestIDValue(w, r)
+	body, ok := readBody(w, r, errAnthropic)
+	if !ok {
+		return
+	}
+	var req protocol.Request
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "请求体解析失败: "+err.Error())
+		return
+	}
+	if len(req.Messages) == 0 {
+		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "messages 不能为空")
+		return
+	}
+	if len(req.Messages) > maxMessages {
+		writeAnthropicErr(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+			"messages 条数超过上限（"+strconv.Itoa(maxMessages)+" 条）")
+		return
+	}
+
+	// count_tokens 与具体模型无关，但仍按 /v1/messages 的规则解析模型名：
+	// 客户端用同一个名字发对话，两边结论必须一致（未知模型照旧 404）。
+	model, _, err := s.resolveModel(s.Store.Settings(), req.Model)
+	if err != nil {
+		writeAPIErr(w, errAnthropic, err)
+		return
+	}
+	up, err := protocol.ToOpenAI(&req, model.ID)
+	if err != nil {
+		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	raw, err := json.Marshal(up)
+	if err != nil {
+		writeAnthropicErr(w, http.StatusInternalServerError, "api_error", "请求体序列化失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"input_tokens": protocol.EstimatePromptLen(raw)})
+}

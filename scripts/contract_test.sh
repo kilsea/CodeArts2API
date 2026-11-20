@@ -396,6 +396,42 @@ fi
 
 # ============================================================
 echo
+echo "#11 Anthropic count_tokens 与日志筛选"
+
+request POST /v1/messages/count_tokens "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
+if expect_status 200 "count_tokens 200"; then
+  TOKENS="$(json_get "$BODY_FILE" 'str(d.get("input_tokens",0))')"
+  if [ "${TOKENS:-0}" -gt 0 ] 2>/dev/null; then
+    ok "input_tokens=$TOKENS"
+  else
+    bad "input_tokens=$TOKENS（应大于 0）"
+  fi
+fi
+
+request GET "/admin/api/logs?limit=5&status=2xx" ""
+if expect_status 200 "日志 status=2xx 200"; then
+  N="$(json_get "$BODY_FILE" 'str(len(d.get("logs",[])))')"
+  if [ "${N:-0}" -gt 0 ] 2>/dev/null; then
+    ok "命中 $N 条"
+  else
+    bad "status=2xx 未命中任何日志"
+  fi
+fi
+
+request GET "/admin/api/logs?limit=10" ""
+if expect_status 200 "日志 200"; then
+  ORDERED="$(json_get "$BODY_FILE" '"1" if all(a["time"]>=b["time"] for a,b in zip(d["logs"],d["logs"][1:])) else "0"')"
+  [ "$ORDERED" = "1" ] && ok "日志最新在前" || bad "日志顺序不是最新在前"
+fi
+
+request GET "/admin/api/usage?days=7" ""
+if expect_status 200 "usage 200"; then
+  DAYS="$(json_get "$BODY_FILE" 'str(d.get("days"))')"
+  [ "$DAYS" = "7" ] && ok "days=7" || bad "days=$DAYS"
+fi
+
+# ============================================================
+echo
 echo "== 结果 =="
 echo "  $(c_green PASS=$PASS)  $(c_red FAIL=$FAIL)  $(c_yellow SKIP=$SKIP)"
 if [ "$FAIL" -gt 0 ]; then

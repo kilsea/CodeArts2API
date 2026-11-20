@@ -104,6 +104,8 @@ curl http://127.0.0.1:10087/v1/responses \
 | `-export-session` | — | 把本机登录态导出为 session JSON（路径，或 `-` 输出到 stdout）后退出 |
 | `-no-import` | — | 启动时不自动导入 |
 | `-no-refresh` | — | 禁止网关自行续期（只读 IDE 会话） |
+| — | `CODEARTS_DUMP_DIR` | 调试采样目录（默认 `<状态文件目录>/samples`） |
+| — | `CODEARTS_DUMP_SAMPLE` | 调试采样的**启动初值**（`1`=全采，`100`=1%）；运行期间以控制台开关为准 |
 
 ---
 
@@ -480,10 +482,16 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 
 <http://127.0.0.1:10087/>，三个内嵌文件（HTML + CSS + JS）、无外部依赖、可离线使用。
 
-- **概览**：请求统计、今日领取 n/m、**活动福利列表与邀请链接（可按账号切换查看）**、模型清单（含积分倍率与**逐模型测活**）、一键刷新模型
+- **概览**：请求统计、今日领取 n/m、**活动福利列表与邀请链接（可按账号切换查看）**、模型清单（含积分倍率与**逐模型测活**）、一键刷新模型、**用量趋势（最近 7/14/30 天，按天柱状图 + 按模型汇总）**
 - **账号**：导入 / **浏览器登录** / 手工录入 / 从 session JSON 导入 / **导出 session JSON** / 探活 / **领取活动福利** / 重读 / 启停 / 删除，AK 与域 ID 脱敏展示，并显示「今日领取」状态；**备注**可记录账号所属手机号，方便换绑 / 重新登录时对号
-- **密钥**：签发 `sk-ca-...` 调用密钥（未签发时 `/v1/*` **仅允许本机直连**）
-- **日志**：只记元信息（模型、耗时、入出长度），不落对话内容
+- **密钥**：签发 `sk-ca-...` 调用密钥（未签发时 `/v1/*` **仅允许本机直连**）；
+  顶部一行「API 端点」直接给出 `<当前地址>/v1`（点击即全选），可一键复制、或跳到 tcptest.cn 做在线测速
+- **日志**：只记元信息（模型、耗时、入出长度），不落对话内容，**最新在上**；
+  支持按状态码 / 分类 / 关键字过滤（服务端过滤）；表格限高内部滚动、表头吸附，
+  不会把下方的调试采样卡片顶出屏幕；
+  下方「调试采样」卡片可开启请求正文留存（**默认关闭**，保留 3 天自动删除），
+  可展开看脱敏后的请求体、或按 `X-Request-Id` 一键重放
+- **接入**：当前网关的 base URL、密钥、三套协议的可复制示例（curl / Claude Code / OpenAI SDK）
 - **设置**：默认 / 强制模型、**允许真实消耗积分开关**、**允许匿名调用开关**、**按密钥限流开关与阈值**、
   **活动福利自动领取开关与时刻**、
   **浏览器登录回调端口**、超时、重试、日志条数、CORS、续期开关、
@@ -491,6 +499,13 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 
 鉴权规则：设了管理密码就必须带 `X-Admin-Password`（或 `Authorization: Bearer`）；
 没设密码则只允许本机直连访问。所有写操作额外做同源校验。
+
+**自动刷新**：控制台每 5 秒增量拉一次数据，**只重建真正变化的区块**（数据指纹相同就不碰 DOM），
+所以不会整页闪、不会丢滚动位置，也不会覆盖正在编辑的设置。页面切到后台时自动暂停。
+侧栏底部显示当前构建版本 —— 升级后一眼确认跑的是哪个二进制。
+
+**主题**：右上角按钮切换深色 / 浅色，选择记在 `localStorage`；首次访问跟随系统
+`prefers-color-scheme`。两套主题只换颜色变量，布局与交互完全一致。
 详见[第八节 安全说明](#八安全说明)。
 
 ---
@@ -499,10 +514,11 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/health` | 探活 + 账号就绪数 |
+| GET | `/health` | 探活 + 账号就绪数 + **构建版本** |
 | GET | `/v1/models` | 模型清单（OpenAI 格式，附带 `codearts` 扩展字段） |
 | POST | `/v1/chat/completions` | OpenAI 兼容，支持流式 / 工具调用 / `reasoning_content` |
 | POST | `/v1/messages` | Anthropic Messages API 兼容（含 `thinking` / `tool_use` 双向映射） |
+| POST | `/v1/messages/count_tokens` | Anthropic token 计数（本地估算，不打上游、不扣积分） |
 | POST | `/v1/responses` | OpenAI Responses API 兼容（流式事件流 / `tools` / `previous_response_id`） |
 | POST | `/v1/responses/input_tokens` | 输入 token 估算（本地计算，不打上游、不扣积分） |
 | GET/DELETE | `/v1/responses/{id}` | 查询 / 删除已保存的响应（仅内存，TTL 1 小时） |
@@ -517,7 +533,11 @@ DPAPI 只有 Windows 有，所以在 Linux / macOS / Docker 里无法自动读�
 | GET | `/admin/api/state` | 首屏状态（账号 / 密钥 / 模型 / 设置 / 统计 / 今日领取） |
 | POST | `/admin/api/accounts` | 账号操作：`import` / `manual` / **`export`** / `session-json` / `remove` / `toggle` / `clear-errors` / `reimport` / **`set-note`** / **`rename`** |
 | GET/POST/DELETE | `/admin/api/keys` | API 密钥增删改查 |
-| GET/DELETE | `/admin/api/logs` `/admin/api/stats` | 请求日志与统计 |
+| GET/DELETE | `/admin/api/logs` | 请求日志（**最新在前**；支持 `status` / `class` / `model` / `q` / `since` / `limit` 过滤） |
+| GET | `/admin/api/usage` | 用量趋势（按「天 + 模型」聚合，`?days=7|14|30`） |
+| GET | `/admin/api/stats` | 累计统计 |
+| GET | `/admin/api/samples` | 调试采样列表（开关 / 采样率 / 目录 / 最近条目） |
+| GET | `/admin/api/samples/<id>` | 单条采样详情（脱敏后的请求体） |
 | GET/POST | `/admin/api/settings` | 运行设置 |
 | POST | `/admin/api/checkin` | 账号连通性探活（用默认模型发一次 `max_tokens=8`，消耗极少积分） |
 | GET | `/admin/api/credits` | **账号积分额度**（套餐总额 / 已用 / 剩余 / 到期）。可选 `?id=<账号>` 只查一个、`?fresh=1` 跳过 60 秒缓存；不消耗积分 |

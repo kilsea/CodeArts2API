@@ -48,11 +48,68 @@
   --r-lg:14px;
   --sidebar-w:248px;
   --topbar-h:64px;
+  /* 主列内容区：宽屏下不再硬卡 1280，按主流后台做法“铺满 + 大屏上限”。
+     --content-max 含左右内边距（border-box），顶栏用同一组值反推对齐。 */
+  --content-max:1920px;
+  --content-pad:32px;
 
   --font:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",
     Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
   --pop:0 18px 44px rgba(0,0,0,.55);
+
+  /* 交互态 / 代码块 / 阴影：这些以前是硬编码的深色值，
+     抽成变量才能被浅色主题整体覆盖 */
+  --code-bg:#0d1117;
+  --hover-border:#364156;
+  --scrollbar-hover:#3a4459;
+  --on-accent:#fff;
+  --shadow:0 12px 32px rgba(0,0,0,.28);
+  --selection:rgba(77,124,255,.35);
+}
+
+/* ===== 浅色主题 ==================================================
+   由右上角按钮切换（localStorage 记住选择）；首次访问跟随系统偏好。
+   只覆盖颜色变量 —— 布局、间距、字号、动效全部共用同一套。 */
+:root[data-theme="light"]{
+  color-scheme:light;
+
+  --bg:#f4f6fa;
+  --bg-soft:#eef2f8;
+  --surface:#ffffff;
+  --surface-2:#f1f5fa;
+  --surface-3:#e4ebf5;
+  --line:#e2e8f1;
+  --line-2:#cbd6e6;
+
+  --text:#16202e;
+  --text-2:#4b586b;
+  --text-3:#7a8798;
+
+  /* 强调色在白底上要压深一点，否则对比度不够 */
+  --accent:#3b6ef0;
+  --accent-text:#2b5ce0;
+  --accent-solid:#3b6ef0;
+  --accent-solid-hover:#2f5fd8;
+  --accent-soft:rgba(59,110,240,.10);
+
+  --ok:#12976a;
+  --ok-soft:rgba(18,151,106,.10);
+  --ok-line:rgba(18,151,106,.26);
+  --warn:#a97612;
+  --warn-soft:rgba(169,118,18,.12);
+  --warn-line:rgba(169,118,18,.28);
+  --err:#cf3547;
+  --err-soft:rgba(207,53,71,.10);
+  --err-line:rgba(207,53,71,.26);
+
+  --code-bg:#f6f8fc;
+  --hover-border:#b9c6da;
+  --scrollbar-hover:#a9b8cc;
+  --on-accent:#fff;
+  --shadow:0 12px 32px rgba(22,32,46,.10);
+  --pop:0 18px 44px rgba(22,32,46,.16);
+  --selection:rgba(59,110,240,.22);
 }
 
 *,*::before,*::after{box-sizing:border-box}
@@ -68,12 +125,12 @@ body{
   text-rendering:optimizeLegibility;
 }
 
-::selection{background:rgba(77,124,255,.35);color:#fff}
+::selection{background:var(--selection);color:var(--on-accent)}
 
 *{scrollbar-width:thin;scrollbar-color:var(--line-2) transparent}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:var(--line-2);border:2px solid var(--bg);border-radius:99px}
-::-webkit-scrollbar-thumb:hover{background:#3a4459}
+::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-hover)}
 ::-webkit-scrollbar-track{background:transparent}
 
 a{color:var(--accent-text)}
@@ -195,7 +252,7 @@ nav.tabs button:focus-visible{outline-offset:-2px}
   gap:16px;
   min-height:var(--topbar-h);
   /* 左右内边距跟随 main 的居中宽度，保证标题与正文左缘对齐 */
-  padding:10px max(28px, calc((100% - 1280px) / 2 + 28px));
+  padding:10px max(var(--content-pad), calc((100% - var(--content-max)) / 2 + var(--content-pad)));
   background:var(--bg);
   border-bottom:1px solid var(--line);
 }
@@ -276,7 +333,7 @@ nav.tabs button:focus-visible{outline-offset:-2px}
   border:1px solid var(--line-2);
   border-radius:var(--r-sm);
   background:var(--surface);
-  box-shadow:0 12px 32px rgba(0,0,0,.28);
+  box-shadow:var(--shadow);
 }
 .pw-panel.open{display:flex}
 .pw-panel label{
@@ -301,10 +358,10 @@ nav.tabs button:focus-visible{outline-offset:-2px}
 
 main{
   width:100%;
-  max-width:1280px;
+  max-width:var(--content-max);
   /* 宽屏下居中，否则内容会贴在侧栏右边、右侧留一大片空白 */
   margin:0 auto;
-  padding:24px 28px 72px;
+  padding:24px var(--content-pad) 72px;
 }
 
 /* 页签面板：切换时轻微上浮，尊重 reduced-motion */
@@ -505,6 +562,16 @@ td.empty{
 }
 .nowrap{white-space:nowrap}
 .cell-stack{display:flex;flex-direction:column;gap:2px}
+/* 这个类也直接挂在 <td> 上（凭据有效期 / 积分额度）。td 一旦变成 flex 就不再是
+   table-cell，会被当成块级盒子堆在行里：不参与行高、也不跟同行其他单元格
+   垂直居中，整行看起来就是错位的。所以 td 上退回 table-cell，改用子元素分块
+   实现上下两行 + 2px 间距。 */
+td.cell-stack{display:table-cell}
+td.cell-stack > *{display:block}
+td.cell-stack > * + *{margin-top:2px}
+/* 上面把子元素强制成 block，会盖掉 [hidden] 的 UA 样式（display:none），
+   积分格靠 hidden 收起进度条，所以这里补回来。 */
+td.cell-stack > *[hidden]{display:none}
 .cell-stack .sub{
   font-family:var(--font);
   font-size:11px;
@@ -513,6 +580,20 @@ td.empty{
 }
 .muted{color:var(--text-3)}
 .trunc{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* 采样详情：请求体可能很长，限制高度并允许滚动，避免把整张表撑开。 */
+.sample-body{
+  margin:0;
+  padding:10px 12px;
+  max-height:320px;
+  overflow:auto;
+  background:var(--code-bg);
+  border-radius:8px;
+  font-size:12px;
+  line-height:1.5;
+  white-space:pre-wrap;
+  word-break:break-word;
+}
 
 /* ===== 按钮 ============================================================= */
 
@@ -535,7 +616,7 @@ td.empty{
   transition:background-color .14s ease,border-color .14s ease,color .14s ease,
     transform .06s ease;
 }
-.btn:hover{background:var(--surface-3);border-color:#364156}
+.btn:hover{background:var(--surface-3);border-color:var(--hover-border)}
 .btn:active{transform:translateY(1px)}
 .btn:focus-visible{outline-offset:1px}
 .btn .ico{width:14px;height:14px}
@@ -543,7 +624,7 @@ td.empty{
 .btn.primary{
   background:var(--accent-solid);
   border-color:var(--accent-solid);
-  color:#fff;
+  color:var(--on-accent);
   font-weight:500;
 }
 .btn.primary:hover{background:var(--accent-solid-hover);border-color:var(--accent-solid-hover)}
@@ -591,7 +672,7 @@ textarea{
   resize:vertical;
 }
 input::placeholder,textarea::placeholder{color:var(--text-3)}
-input:hover,select:hover,textarea:hover{border-color:#364156}
+input:hover,select:hover,textarea:hover{border-color:var(--hover-border)}
 input:focus,select:focus,textarea:focus{
   outline:none;
   border-color:var(--accent);
@@ -753,7 +834,7 @@ code{
   padding:1px 5px;
   border-radius:4px;
   background:var(--surface-3);
-  color:#cfd9ec;
+  color:var(--text);
   font-family:var(--mono);
   font-size:11.5px;
   word-break:break-word;
@@ -811,7 +892,7 @@ code{
   padding:8px 14px;
   border-radius:var(--r-sm);
   background:var(--accent-solid);
-  color:#fff;
+  color:var(--on-accent);
   font-size:13px;
   text-decoration:none;
   transition:top .14s ease;
@@ -851,12 +932,14 @@ code{
 /* ===== 响应式 =========================================================== */
 
 @media (max-width:1100px){
+  :root{--content-pad:20px}
   .pw-group input{width:132px}
-  main{padding:20px 20px 64px}
-  .topbar{padding:10px 20px}
+  main{padding:20px var(--content-pad) 64px}
+  .topbar{padding:10px var(--content-pad)}
 }
 
 @media (max-width:920px){
+  :root{--content-pad:16px}
   .app{grid-template-columns:minmax(0,1fr)}
   .sidebar{
     position:static;
@@ -894,7 +977,7 @@ code{
   .topbar{
     position:sticky;
     top:0;
-    padding:10px 16px;
+    padding:10px var(--content-pad);
     min-height:0;
     flex-wrap:wrap;
     gap:10px;
@@ -904,7 +987,7 @@ code{
   .pw-group{flex:1;min-width:180px}
   .pw-group input{flex:1;width:auto}
   .sync{display:none}
-  main{padding:16px 16px 56px}
+  main{padding:16px var(--content-pad) 56px}
   .card{padding:15px 15px 14px;border-radius:12px}
   .card-head{gap:10px}
   .card-actions{margin-left:0;width:100%}
@@ -932,3 +1015,162 @@ code{
   }
   section.on{animation:none}
 }
+
+/* ===== 用量趋势（纯 CSS 柱状图，不引图表库） ===================== */
+
+.usage-chart{
+  display:flex;
+  align-items:flex-end;
+  gap:8px;
+  min-height:120px;
+  padding:8px 0 0;
+}
+.usage-bar{
+  flex:1;
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-end;
+  align-items:center;
+  gap:6px;
+}
+.usage-bar .bar{
+  width:100%;
+  background:linear-gradient(180deg,var(--accent),rgba(77,124,255,.35));
+  border-radius:4px 4px 2px 2px;
+  min-height:2px;
+  transition:height .25s ease;
+}
+.usage-bar .val{font-size:11px;color:var(--text-2);font-variant-numeric:tabular-nums}
+.usage-bar .lbl{font-size:11px;color:var(--text-3);white-space:nowrap}
+.usage-bar.zero .bar{background:var(--line)}
+
+/* 侧栏底部的构建信息：升级后一眼确认跑的是哪个版本 */
+.build{
+  display:block;
+  margin-top:6px;
+  font-size:11px;
+  color:var(--text-3);
+  font-family:var(--mono);
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+/* ===== 接入指引 ================================================= */
+
+/* 示例块可折叠（<details>）：标题即开关，默认展开 */
+details.guide-block{margin-top:18px}
+details.guide-block > summary{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin:0 0 8px;
+  padding:3px 0;
+  font-size:13px;
+  font-weight:600;
+  cursor:pointer;
+  list-style:none;
+  border-radius:6px;
+}
+details.guide-block > summary::-webkit-details-marker{display:none}
+/* 自绘箭头：折叠时朝右，展开时朝下 */
+details.guide-block > summary::before{
+  content:"";
+  width:0;
+  height:0;
+  border-left:5px solid var(--text-3);
+  border-top:4px solid transparent;
+  border-bottom:4px solid transparent;
+  transform:rotate(90deg);
+  transition:transform .15s ease;
+}
+details.guide-block:not([open]) > summary::before{transform:rotate(0)}
+details.guide-block:not([open]) > summary{margin-bottom:0}
+details.guide-block > summary:hover{color:var(--accent-text)}
+details.guide-block > summary:hover::before{border-left-color:var(--accent-text)}
+details.guide-block > summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+details.guide-block > summary .muted{font-weight:400;margin-left:6px}
+.guide-block .row.between{align-items:flex-start;gap:10px}
+pre.code{
+  flex:1;
+  margin:0;
+  padding:10px 12px;
+  background:var(--code-bg);
+  border-radius:8px;
+  font-family:var(--mono);
+  font-size:12px;
+  line-height:1.55;
+  white-space:pre-wrap;
+  word-break:break-word;
+  max-height:280px;
+  overflow:auto;
+}
+
+/* ===== 长表格：限高 + 内部滚动 =====================================
+   请求日志可能有几百行，不限高会把下面的「调试采样」卡片顶到屏幕外。
+   表头 sticky 保证滚动时列名仍可见（否则滚到一半不知道哪列是哪列）。 */
+
+.table-wrap.scroll-y{
+  max-height:min(56vh, 560px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  /* 滚动条不压住内容 */
+  scrollbar-gutter:stable;
+}
+.table-wrap.scroll-y thead th{
+  position:sticky;
+  top:0;
+  z-index:2;
+  /* 必须是不透明底色：透过去的话滚动的内容会和表头文字叠在一起 */
+  background:var(--surface);
+  padding-top:10px;
+  box-shadow:inset 0 -1px 0 var(--line-2);
+}
+
+/* 图标按钮：只放一个图标，尺寸与普通按钮对齐 */
+.btn.icon-btn{
+  padding:0;
+  width:34px;
+  height:34px;
+  justify-content:center;
+}
+.btn.icon-btn .ico{width:16px;height:16px}
+
+/* ===== API 端点条 ================================================
+   不用输入框：只读 URL 摆成一行标签条更省空间，也避免「看起来能编辑」
+   的误导。user-select:all 让点击即整段选中，复制仍然方便。 */
+
+.endpoint-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  width:fit-content;
+  max-width:100%;
+  padding:7px 10px 7px 12px;
+  margin:0 0 16px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--r-md);
+}
+.endpoint-label{
+  font-size:12.5px;
+  color:var(--text-2);
+  white-space:nowrap;
+}
+.endpoint-url{
+  padding:0;
+  background:none;
+  font-family:var(--mono);
+  font-size:12.5px;
+  color:var(--text);
+  user-select:all;
+  cursor:text;
+  word-break:break-all;
+}
+.endpoint-bar .btn.icon-btn.xs{
+  width:26px;
+  height:26px;
+}
+.endpoint-bar .btn.icon-btn.xs .ico{width:14px;height:14px}

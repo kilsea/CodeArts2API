@@ -59,9 +59,13 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.cache.mu.RLock()
-	cacheErr := s.cache.err
-	s.cache.mu.RUnlock()
+	var cacheErr string
+	// cache 由 New 初始化；测试会直接构造 &Server{}，不能假设它存在。
+	if s.cache != nil {
+		s.cache.mu.RLock()
+		cacheErr = s.cache.err
+		s.cache.mu.RUnlock()
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"today":          today,
@@ -70,6 +74,7 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 		"models":         s.Reg.List(s.Store.Settings().ModelAliases),
 		"settings":       sanitizedSettings(s.Store.Settings()),
 		"stats":          s.Store.Stats(),
+		"build":          buildInfo(),
 		"upstream_error": cacheErr,
 	})
 }
@@ -332,13 +337,54 @@ func (s *Server) handleKeyReveal(w http.ResponseWriter, r *http.Request, ref str
 }
 
 // handleAdminLogs 返回或清空请求日志。
+//
+// 支持服务端过滤：控制台只看「最近的失败」时不该把 500 条全量传过去。
+// 参数：status（精确值或 4xx/5xx）、class（err_class）、model、q（关键字）、
+// since（unix 秒）、limit。
 func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		s.Store.ClearLogs()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"logs": s.Store.Logs(intQuery(r, "limit"))})
+	q := r.URL.Query()
+	f := store.LogFilter{
+		Status: strings.TrimSpace(q.Get("status")),
+		Class:  strings.TrimSpace(q.Get("class")),
+		Model:  strings.TrimSpace(q.Get("model")),
+		Q:      strings.TrimSpace(q.Get("q")),
+		Since:  int64(intQuery(r, "since")),
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"logs": newestFirst(s.Store.QueryLogs(f, intQuery(r, "limit"))),
+	})
+}
+
+// handleAdminUsage 返回按「天 + 模型」聚合的用量（默认最近 7 天）。
+func (s *Server) handleAdminUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
+		return
+	}
+	days := intQuery(r, "days")
+	if days <= 0 {
+		days = 7
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"days": days,
+		"rows": s.Store.Usage(days),
+	})
+}
+
+// newestFirst 把日志翻成「最新的在前」。
+//
+// 控制台日志表是按返回顺序从上到下渲染的：时间正序意味着要滚到底才能看到
+// 刚发生的那条，排障时正好相反。因此排序在服务端做，前端不再自己翻转。
+func newestFirst(logs []store.LogEntry) []store.LogEntry {
+	for i, j := 0, len(logs)-1; i < j; i, j = i+1, j-1 {
+		logs[i], logs[j] = logs[j], logs[i]
+	}
+	return logs
 }
 
 // handleAdminStats 返回或重置统计。
@@ -385,6 +431,8 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		IDEName           *string           `json:"ide_name"`
 		IDEVersion        *string           `json:"ide_version"`
 		Language          *string           `json:"language"`
+		DebugCapture      *bool             `json:"debug_capture"`
+		DebugCaptureRate  *int              `json:"debug_capture_sample"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
@@ -418,6 +466,15 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		setIf(&st.IDEName, body.IDEName)
 		setIf(&st.IDEVersion, body.IDEVersion)
 		setIf(&st.Language, body.Language)
+		setIf(&st.DebugCapture, body.DebugCapture)
+		if body.DebugCaptureRate != nil {
+			// 采样率分母至少 1：0 会让采样恒为关，且难从界面看出来。
+			rate := *body.DebugCaptureRate
+			if rate <= 0 {
+				rate = 1
+			}
+			st.DebugCaptureSample = rate
+		}
 		// 只有显式带 clear_admin_password 才清除：空字符串一律视为「不修改」。
 		// 否则误发一个空字段就会把管理密码抹掉，让管理接口退回「本机直连」兜底。
 		if body.ClearPassword != nil && *body.ClearPassword {
@@ -433,6 +490,8 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	s.ApplyIdentity()
 	// 限流参数变更后立即生效（不用重启）
 	s.ApplyRateLimit()
+	// 调试采样开关同理：排障时要在不重启的前提下立刻开始/停止记录。
+	s.ApplyDebug()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
 }
 

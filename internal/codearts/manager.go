@@ -125,14 +125,16 @@ func (m *Manager) resolve(ctx context.Context, acct *Account, opt ResolveOptions
 		if live != nil {
 			return nil, &CredentialsError{
 				Account: acct.DisplayName(),
-				Reason: fmt.Sprintf("凭据已于 %s 过期，且没有可用的续期材料（缺 refresh_token / DPoP 私钥 / PKCE verifier）",
+				Reason: fmt.Sprintf("凭据已过期或即将过期（%s），且没有可用的续期材料（缺 refresh_token / DPoP 私钥 / PKCE verifier）",
 					live.ExpiresAt.Local().Format("2006-01-02 15:04:05")),
 			}
 		}
 		return nil, &CredentialsError{Account: acct.DisplayName(), Reason: "没有可用凭据"}
 	}
 
-	m.logf("账号 %s 凭据已过期，尝试用 refresh_token 续期", acct.DisplayName())
+	// 注意：触发条件是「进入续期窗口」（Margin，默认 5 分钟），此时凭据通常**还没**过期。
+	// 日志写「已过期」会让人以为出了故障，白排查一轮。
+	m.logf("账号 %s 凭据已进入续期窗口，尝试用 refresh_token 续期", acct.DisplayName())
 	res, err := m.Client.Refresh(ctx, fresh)
 	if err != nil {
 		return nil, &CredentialsError{

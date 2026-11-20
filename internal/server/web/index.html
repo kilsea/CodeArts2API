@@ -35,6 +35,10 @@
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3.6"/><path d="M11.6 12H21"/><path d="M17.5 12v3"/><path d="M20.5 12v2"/></svg>
         <span>密钥</span>
       </button>
+      <button role="tab" id="nav-guide" data-tab="guide" aria-selected="false" aria-controls="tab-guide">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h9.5A3.5 3.5 0 0 1 19 8v11.5H8a2.5 2.5 0 0 1-2-2.5z"/><path d="M8 4.5V19"/></svg>
+        <span>接入</span>
+      </button>
       <button role="tab" id="nav-logs" data-tab="logs" aria-selected="false" aria-controls="tab-logs">
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg>
         <span>日志</span>
@@ -47,6 +51,7 @@
 
     <div class="sidebar-foot">
       <span id="health" class="badge"><i class="dot"></i><span>检测中…</span></span>
+      <span class="build" id="build" title="当前运行的构建"></span>
     </div>
   </aside>
 
@@ -72,9 +77,13 @@
               <button class="btn primary xs" id="savePw">记住</button>
               <button class="btn ghost xs" id="forgetPw">忘记</button>
             </div>
-            <span class="hint">只在本标签页记住，关闭标签页即失效。密码等价于「导出完整登录态」的权限。</span>
+            <span class="hint" id="pwModeHint">只在本标签页记住，关闭标签页即失效。密码等价于「导出完整登录态」的权限。</span>
           </div>
         </div>
+        <button class="btn icon-btn" id="themeToggle" aria-label="切换到浅色主题" title="切换到浅色主题">
+          <svg class="ico" id="themeIconDark" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1z"/></svg>
+          <svg class="ico hidden" id="themeIconLight" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/></svg>
+        </button>
         <button class="btn primary" id="refresh">
           <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v4.5h-4.5"/></svg>
           刷新
@@ -85,6 +94,29 @@
     <main id="main">
       <section id="tab-overview" class="on" role="tabpanel" aria-labelledby="nav-overview">
         <div class="kpis" id="kpis"></div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>用量趋势</h2>
+              <p class="card-sub">按天聚合（只存聚合值，不存单条请求）；重启不丢</p>
+            </div>
+            <div class="card-actions">
+              <select id="usageDays" class="w-auto" aria-label="统计天数">
+                <option value="7">最近 7 天</option>
+                <option value="14">最近 14 天</option>
+                <option value="30">最近 30 天</option>
+              </select>
+            </div>
+          </div>
+          <div class="usage-chart" id="usageChart" aria-label="每日请求数"></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>模型</th><th>请求</th><th>入（字符）</th><th>出（字符）</th></tr></thead>
+              <tbody id="usageModels"></tbody>
+            </table>
+          </div>
+        </div>
 
         <div class="card">
           <div class="card-head">
@@ -315,6 +347,18 @@
       </section>
 
       <section id="tab-keys" role="tabpanel" aria-labelledby="nav-keys">
+        <div class="endpoint-bar">
+          <span class="endpoint-label">API 端点</span>
+          <span class="badge ok">默认</span>
+          <code class="endpoint-url" id="keyEndpoint" data-select-on-click>—</code>
+          <button class="btn icon-btn xs" id="copyEndpoint" title="复制端点" aria-label="复制端点">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg>
+          </button>
+          <button class="btn icon-btn xs" id="speedEndpoint" title="在线测速（tcptest.cn）" aria-label="在线测速">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg>
+          </button>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <div>
@@ -344,9 +388,29 @@
           <div class="card-head">
             <div>
               <h2>请求日志</h2>
-              <p class="card-sub">只记录元信息（模型、耗时、长度），不落对话内容</p>
+              <p class="card-sub">只记录元信息（模型、耗时、长度），不落对话内容；<strong>最新在上</strong></p>
             </div>
             <div class="card-actions">
+              <select id="logStatus" class="w-auto" aria-label="按状态码筛选">
+                <option value="">全部状态</option>
+                <option value="2xx">2xx 成功</option>
+                <option value="4xx">4xx 请求侧</option>
+                <option value="5xx">5xx 服务侧</option>
+              </select>
+              <select id="logClass" class="w-auto" aria-label="按错误分类筛选">
+                <option value="">全部分类</option>
+                <option value="moderation">审核</option>
+                <option value="client_request">参数</option>
+                <option value="credentials">登录态</option>
+                <option value="no_account">无账号</option>
+                <option value="transient">临时</option>
+                <option value="rate_limited">限流</option>
+                <option value="network">网络</option>
+                <option value="upstream">上游</option>
+                <option value="client_abort">中断</option>
+                <option value="internal">内部</option>
+              </select>
+              <input id="logQ" class="w-200" placeholder="request_id / 错误 / 账号" aria-label="日志关键字">
               <select id="logLimit" class="w-auto" aria-label="日志条数">
                 <option value="50">最近 50</option>
                 <option value="200">最近 200</option>
@@ -356,12 +420,116 @@
               <button class="btn danger" id="clearLogs">清空</button>
             </div>
           </div>
-          <div class="table-wrap">
+          <div class="table-wrap scroll-y">
             <table>
               <thead><tr><th>时间</th><th>模型</th><th>流式</th><th>状态</th><th>分类</th><th>耗时</th><th>入/出</th><th>账号</th><th>密钥</th><th>错误</th></tr></thead>
               <tbody id="logs"></tbody>
             </table>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>调试采样</h2>
+              <p class="card-sub">把脱敏后的请求体落盘，用来复现「客户端说失败、网关却查不到现场」的问题；保留 3 天，超期自动删除</p>
+            </div>
+            <div class="card-actions">
+              <select id="dbgRate" class="w-auto" aria-label="采样率">
+                <option value="1">全部记录</option>
+                <option value="10">1/10</option>
+                <option value="100">1/100</option>
+              </select>
+              <button class="btn" id="reloadSamples">刷新</button>
+            </div>
+          </div>
+          <label class="check" for="dbgCapture">
+            <input type="checkbox" id="dbgCapture">
+            <span>开启调试采样（默认关闭）
+              <span class="check-hint">开启后请求正文会写到本地 <code>samples/</code> 目录，<strong>保留 3 天自动删除</strong>；超长内容（图片 base64、附件正文）会脱敏成「N bytes」，但仍可能包含对话内容 —— 只在排障时临时打开。</span>
+            </span>
+          </label>
+          <p class="hint" id="dbgDir"></p>
+          <div class="table-wrap scroll-y">
+            <table>
+              <thead><tr><th>时间</th><th>路径</th><th>模型</th><th>流式</th><th>请求 ID</th><th>操作</th></tr></thead>
+              <tbody id="samples"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-guide" role="tabpanel" aria-labelledby="nav-guide">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>接入地址</h2>
+              <p class="card-sub">同一个网关同时提供三套协议，按客户端选一种即可；参数支持情况见 <code>docs/COMPAT.md</code></p>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="guideBase">Base URL（OpenAI / Responses）</label>
+              <div class="row">
+                <input id="guideBase" class="w-full mono" readonly>
+                <button class="btn xs" id="copyBase">复制</button>
+              </div>
+              <span class="field-hint">OpenAI SDK 的 <code>base_url</code> 填这个（客户端会自己拼 <code>/v1</code>）。</span>
+            </div>
+            <div class="field">
+              <label for="guideAnthropic">Base URL（Anthropic）</label>
+              <div class="row">
+                <input id="guideAnthropic" class="w-full mono" readonly>
+                <button class="btn xs" id="copyAnthropic">复制</button>
+              </div>
+              <span class="field-hint">Claude Code 用 <code>ANTHROPIC_BASE_URL</code> 指向它（不带 <code>/v1</code>）。</span>
+            </div>
+            <div class="field">
+              <label for="guideKey">API 密钥</label>
+              <div class="row">
+                <input id="guideKey" class="w-full mono" readonly placeholder="尚未签发密钥">
+                <button class="btn xs" id="copyKey">复制</button>
+              </div>
+              <span class="field-hint">在「密钥」页签发；未签发时只有本机直连可用。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>调用示例</h2>
+              <p class="card-sub">点标题折叠 / 展开，右上角复制；模型名先从「概览 → 模型清单」里挑</p>
+            </div>
+            <div class="card-actions">
+              <button class="btn" id="toggleAllExamples">全部展开</button>
+            </div>
+          </div>
+
+          <details class="guide-block">
+            <summary>OpenAI Chat Completions <span class="muted">POST /v1/chat/completions</span></summary>
+            <div class="row between"><pre class="code" id="exChat"></pre><button class="btn xs" id="copyChat">复制</button></div>
+          </details>
+
+          <details class="guide-block">
+            <summary>OpenAI Responses <span class="muted">POST /v1/responses</span></summary>
+            <div class="row between"><pre class="code" id="exResponses"></pre><button class="btn xs" id="copyResponses">复制</button></div>
+          </details>
+
+          <details class="guide-block">
+            <summary>Anthropic Messages <span class="muted">POST /v1/messages</span></summary>
+            <div class="row between"><pre class="code" id="exAnthropic"></pre><button class="btn xs" id="copyAnthropicCurl">复制</button></div>
+          </details>
+
+          <details class="guide-block">
+            <summary>Claude Code / Anthropic SDK <span class="muted">环境变量</span></summary>
+            <div class="row between"><pre class="code" id="exClaude"></pre><button class="btn xs" id="copyClaude">复制</button></div>
+          </details>
+
+          <details class="guide-block">
+            <summary>OpenAI Python SDK <span class="muted">openai &gt;= 1.0</span></summary>
+            <div class="row between"><pre class="code" id="exPython"></pre><button class="btn xs" id="copyPython">复制</button></div>
+          </details>
         </div>
       </section>
 
@@ -418,6 +586,27 @@
                 <label for="sLoginPort">浏览器登录回调端口</label>
                 <input id="sLoginPort" type="number" min="0" max="65535" placeholder="0">
                 <span class="field-hint">0=随机；远端部署建议固定，如 64361。</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h3>调试</h3>
+            <label class="check" for="sDebugCapture">
+              <input type="checkbox" id="sDebugCapture">
+              <span>开启调试采样（本地留存请求正文）
+                <span class="check-hint">默认关闭。开启后把<strong>脱敏后</strong>的请求体写到状态文件旁的 <code>samples/</code>，<strong>保留 3 天自动删除</strong>；日志页可展开查看、也可按请求 ID 重放。脱敏只处理超长内容（图片 base64、附件正文），对话文字仍会落盘 —— 只在排障时打开。</span>
+              </span>
+            </label>
+            <div class="field-grid">
+              <div class="field">
+                <label for="sDebugRate">采样率</label>
+                <select id="sDebugRate" class="w-auto">
+                  <option value="1">全部记录（排障推荐）</option>
+                  <option value="10">1/10</option>
+                  <option value="100">1/100</option>
+                </select>
+                <span class="field-hint">改完立即生效，不用点保存；与「日志 → 调试采样」是同一个开关。</span>
               </div>
             </div>
           </div>

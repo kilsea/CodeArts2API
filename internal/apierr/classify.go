@@ -56,6 +56,21 @@ func Classify(err error) string {
 	if codearts.IsClientRequestError(err) {
 		return "client_request"
 	}
+	// 网关自己判定的请求侧错误（参数越界 / 不支持字段 / 模型不存在 /
+	// 响应 id 查不到）不是上游业务错误，也不是内部错误 —— 不归到 client_request
+	// 会让控制台的「参数」筛选漏掉它们，日志里一律显示「内部」，误导排查方向。
+	var ipe *InvalidParamError
+	if errors.As(err, &ipe) {
+		return "client_request"
+	}
+	var mnf *ModelNotFound
+	if errors.As(err, &mnf) {
+		return "client_request"
+	}
+	var rnf *ResponseNotFound
+	if errors.As(err, &rnf) {
+		return "client_request"
+	}
 	var rl *RateLimited
 	if errors.As(err, &rl) {
 		return "rate_limited"
